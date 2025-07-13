@@ -32,7 +32,8 @@ const int apiPort = 80;
 #define CHANNEL           0
 
 #define BUZZER_PIN 4
-MelodyPlayer player(BUZZER_PIN, 0U, true, 125); // Default volume 125
+uint8_t buzzerVolume = 5; // 0-255, 5 default
+MelodyPlayer player(BUZZER_PIN, 0U, true, buzzerVolume);
 
 CRGB leds[LEDS_COUNT];
 FujitsuAC fujitsu;
@@ -41,7 +42,6 @@ AsyncWebSocket ws("/ws");
 
 bool colourLEDState = true;
 uint8_t colourLEDBrightness = 30;
-uint8_t buzzerVolume = 125; // Default buzzer volume (0-255)
 
 const uint8_t acRxPin = 25;
 const uint8_t acTxPin = 32;
