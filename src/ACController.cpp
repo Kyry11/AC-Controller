@@ -10,8 +10,8 @@
 #include <Preferences.h>
 #include <DNSServer.h>
 
-#include <melody_player.h>
-#include <melody_factory.h>
+#include "melody_player/melody_player.h"
+#include "melody_player/melody_factory.h"
 
 // Preferences keys for eeprom config
 const char* PREF_KEY_SSID = "wifi_ssid";
@@ -342,7 +342,7 @@ String buildHtmlPage() {
   html += "  reloadCurrentStateAsync().then(() => connectWebSocket());";
   html += "});";
   html += "</script></head>";
-  html += "<body><h1>Fujitsu AC & Zone Controller</h1><br/><h3>v1.075</h3>";
+  html += "<body><h1>Fujitsu AC & Zone Controller</h1><br/><h3>v1.077</h3>";
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
