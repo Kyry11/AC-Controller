@@ -10,6 +10,9 @@
 #include <Preferences.h>
 #include <DNSServer.h>
 
+#include <melody_player.h>
+#include <melody_factory.h>
+
 // Preferences keys for eeprom config
 const char* PREF_KEY_SSID = "wifi_ssid";
 const char* PREF_KEY_PASS = "wifi_pass";
@@ -28,6 +31,9 @@ const int apiPort = 80;
 #define LEDS_PIN          16
 #define CHANNEL           0
 
+#define BUZZER_PIN 4
+MelodyPlayer player(BUZZER_PIN, 0U, true, 125); // Default volume 125
+
 CRGB leds[LEDS_COUNT];
 FujitsuAC fujitsu;
 AsyncWebServer server(apiPort);
@@ -35,6 +41,7 @@ AsyncWebSocket ws("/ws");
 
 bool colourLEDState = true;
 uint8_t colourLEDBrightness = 30;
+uint8_t buzzerVolume = 125; // Default buzzer volume (0-255)
 
 const uint8_t acRxPin = 25;
 const uint8_t acTxPin = 32;
@@ -42,8 +49,10 @@ const uint8_t acTxPin = 32;
 const uint8_t outputPins[] = { 2, 19, 21, 22, 23 };
 bool outputStates[ARRAY_SIZE(outputPins)] = {};
 
-const uint8_t inputPins[] = { 4, 26, 27, 33 };
+const uint8_t inputPins[] = { 14, 26, 27, 33 };
 bool inputStates[ARRAY_SIZE(inputPins)] = {};
+
+const uint8_t STATUS_LED_PIN = outputPins[0];
 
 const uint8_t resetButtonPin = 0;
 const int resetButtonSamplingFrequency = 300;
@@ -91,6 +100,7 @@ String htmlWiFiConfigCaptivePortal = R"rawliteral(
 void processRootRoute(AsyncWebServerRequest *request);
 void processApiStatusRoute(AsyncWebServerRequest *request);
 void processColourLEDControl(AsyncWebServerRequest *request, String setting, String value);
+void processBuzzerControl(AsyncWebServerRequest *request, String setting, String value);
 void processOutputPinControl(AsyncWebServerRequest *request, String pinStr, String valueStr);
 void processACControl(AsyncWebServerRequest *request, String setting, String value);
 void process404(AsyncWebServerRequest *request);
@@ -180,6 +190,13 @@ String buildColourLEDControlHTML() {
   html += "\" data-brightness=\"" + String(colourLEDBrightness) + "\" href=\"javascript:void(0)\" onclick=\"submitApiRequest('/api/colourled/state/' + (parseInt(this.dataset.state) ? 0 : 1));return false;\" class=\"";
   html += buttonClass + "\">Pin Colour LED: " + ledState + "</a></div>";
   html += "<div><label>Brightness:&nbsp;</label><input id=\"colourLEDBrightness\" type=\"number\" value=\"" + String(colourLEDBrightness) + "\"><input type=\"button\" value=\"Set\" onclick=\"submitApiRequest('/api/colourled/brightness/' + getElementById('colourLEDBrightness').value);return false;\"></div>";
+  return html;
+}
+
+String buildBuzzerControlHTML() {
+  String html = "";
+  html += "<div><label>Volume:&nbsp;</label><input id=\"buzzerVolume\" type=\"number\" min=\"0\" max=\"255\" value=\"" + String(buzzerVolume) + "\"><input type=\"button\" value=\"Set\" onclick=\"submitApiRequest('/api/buzzer/volume/' + getElementById('buzzerVolume').value);return false;\"></div>";
+  html += "<div><input type=\"button\" value=\"Test Buzzer\" onclick=\"submitApiRequest('/api/buzzer/test');return false;\" class=\"button\"></div>";
   return html;
 }
 
@@ -290,6 +307,10 @@ String buildHtmlPage() {
   html += "    const brightnessInput = document.getElementById('colourLEDBrightness');";
   html += "    if (brightnessInput) brightnessInput.value = state.colourled.brightness;";
   html += "  }";
+  html += "  if (state.buzzer) {";
+  html += "    const buzzerVolumeInput = document.getElementById('buzzerVolume');";
+  html += "    if (buzzerVolumeInput) buzzerVolumeInput.value = state.buzzer.volume;";
+  html += "  }";
   html += "  if (state.ac) {";
   html += "    const acStateToggle = document.getElementById('acstatetoggle');";
   html += "    if (acStateToggle) {";
@@ -321,10 +342,11 @@ String buildHtmlPage() {
   html += "  reloadCurrentStateAsync().then(() => connectWebSocket());";
   html += "});";
   html += "</script></head>";
-  html += "<body><h1>Baum's Fujitsu AC & Zone Controller</h1>";
+  html += "<body><h1>Fujitsu AC & Zone Controller</h1><br/><h3>v1.075</h3>";
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
+  html += "<h3>Buzzer Control</h3><div class=\"button-container\">" + buildBuzzerControlHTML() + "</div>";
   html += "<h3>Available GPIO Output Control Pins</h3><div class=\"button-container\">" + buildOutputPinsHTML() + "</div>";
   html += "<h3>Available Input Control Pins</h3><div class=\"button-container\">" + buildInputPinsHTML() + "</div>";
   html += "<h3><a href=\"/update\">Upload new firmware</a></h3>";
@@ -358,6 +380,8 @@ String buildCurrentStatePayload() {
   JsonObject colourled = doc["colourled"].to<JsonObject>();
   colourled["state"] = colourLEDState;
   colourled["brightness"] = colourLEDBrightness; // Already uint8_t, no need for String()
+  JsonObject buzzer = doc["buzzer"].to<JsonObject>();
+  buzzer["volume"] = buzzerVolume;
   String payload;
   serializeJson(doc, payload);
   return payload;
@@ -367,15 +391,36 @@ void processApiStatusRoute(AsyncWebServerRequest *request) {
   request->send(200, "application/json", buildCurrentStatePayload());
 }
 
-void notifyClients() {
+void notifyAudibleTone() {
+
+  const int nNotes = 8;
+  String notes[nNotes] = { "C4", "G3", "G3", "A3", "G3", "SILENCE", "B3", "C4" };
+  const int timeUnit = 175;
+
+  Melody melody = MelodyFactory.load("Nice Melody", timeUnit, notes, nNotes);
+
+  Serial.println(String(" Title:") + melody.getTitle());
+  Serial.println(String(" Time unit:") + melody.getTimeUnit());
+  Serial.println("Start playing in non-blocking mode...");
+
+  player.playAsync(melody);
+  Serial.println("Melody is playing!");
+}
+
+void notifyWSSubscribers() {
   ws.textAll(buildCurrentStatePayload());
+}
+
+void notifyObservers() {
+  notifyWSSubscribers();
+  notifyAudibleTone();
 }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   switch (type) {
     case WS_EVT_CONNECT:
       Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-      notifyClients();
+      notifyObservers();
       break;
     case WS_EVT_DISCONNECT: Serial.printf("WebSocket client #%u disconnected\n", client->id()); break;
     case WS_EVT_DATA: Serial.printf("WebSocket client #%u sent data: %s\n", client->id(), (char*)data); break;
@@ -396,7 +441,28 @@ void processColourLEDControl(AsyncWebServerRequest *request, String setting, Str
   } else {
     request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
   }
-  if (changed) notifyClients();
+  if (changed) notifyObservers();
+}
+
+void processBuzzerControl(AsyncWebServerRequest *request, String setting, String value) {
+  bool changed = false;
+  if (setting == "volume") {
+    uint8_t newVolume = value.toInt();
+    if (newVolume > 255) newVolume = 255; // Clamp to valid range
+    if (buzzerVolume != newVolume) {
+      buzzerVolume = newVolume;
+      player.setVolume(buzzerVolume);
+      changed = true;
+    }
+    request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
+  } else if (setting == "test") {
+    // Play a test tone to demonstrate the current volume
+    notifyAudibleTone();
+    request->send(200, "application/json", "{\"success\":true,\"action\":\"test\"}");
+  } else {
+    request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
+  }
+  if (changed) notifyObservers();
 }
 
 void processOutputPinControl(AsyncWebServerRequest *request, String pinStr, String valueStr) {
@@ -425,7 +491,7 @@ void processOutputPinControl(AsyncWebServerRequest *request, String pinStr, Stri
     }
     request->send(200, "application/json", "{\"success\":true,\"pin\":" + pinStr + ",\"value\":" + valueStr + "}");
   }
-  if (changed) notifyClients();
+  if (changed) notifyObservers();
 }
 
 void processACControl(AsyncWebServerRequest *request, String setting, String value) {
@@ -491,7 +557,7 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
 
   }
 
-  if (changed) notifyClients();
+  if (changed) notifyObservers();
 }
 
 void process404(AsyncWebServerRequest *request) {
@@ -623,27 +689,41 @@ void setup() {
       inputStates[i] = digitalRead(inputPins[i]) == HIGH;
     }
 
-    // Initial output pin blink sequence (optional, can be removed if not desired after WiFi setup)
-    for (int i = 0; i < 20; i++) {
+    // // Initial output pin blink sequence (optional, can be removed if not desired after WiFi setup)
+    // for (int i = 0; i < 20; i++) {
+    //   delay(75);
+    //   String log = (i % 2 == 0) ? "!" : "¡";
+    //   uint8_t level = (i % 2 == 0) ? HIGH : LOW;
+    //   for (int j = 0; j < ARRAY_SIZE(outputPins); j++) {
+    //     Serial.print(log);
+    //     digitalWrite(outputPins[j], level);
+    //   }
+    // }
+    // // Ensure pins are LOW after blink
+    // for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
+    //   digitalWrite(outputPins[i], LOW);
+    // }
+
+    // Initial status led blink sequence
+    for (int i = 0; i < 33; i++) {
       delay(75);
       String log = (i % 2 == 0) ? "!" : "¡";
       uint8_t level = (i % 2 == 0) ? HIGH : LOW;
-      for (int j = 0; j < ARRAY_SIZE(outputPins); j++) {
-        Serial.print(log);
-        digitalWrite(outputPins[j], level);
-      }
+      Serial.print(log);
+      digitalWrite(STATUS_LED_PIN, level);
     }
-    // Ensure pins are LOW after blink
-    for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
-      digitalWrite(outputPins[i], LOW);
-    }
+    // Ensure status led is LOW after blink
+    digitalWrite(STATUS_LED_PIN, LOW);
 
+    notifyAudibleTone();
 
     // Set up existing server routes for STA mode
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ processRootRoute(request); });
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){ processApiStatusRoute(request); });
     server.on("^\\/api\\/colourled\\/(state|brightness)\\/([0-9a-zA-Z]+)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processColourLEDControl(request, request->pathArg(0), request->pathArg(1)); });
+    server.on("^\\/api\\/buzzer\\/(volume|test)\\/([0-9]+)?$", HTTP_POST,
+      [](AsyncWebServerRequest *request) { processBuzzerControl(request, request->pathArg(0), request->pathArg(1)); });
     server.on("^\\/api\\/out\\/([0-9]+)\\/(0|1|press)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processOutputPinControl(request, request->pathArg(0), request->pathArg(1)); });
     server.on("^\\/api\\/ac\\/(temp|mode|fan|power)\\/([0-9]+|dry|cool|heat|auto|quiet|low|medium|high|on|off|0|1)$", HTTP_POST,
@@ -712,7 +792,7 @@ void processPinStateChanges() {
     }
 
     if (changed) {
-      notifyClients();
+      notifyObservers();
     }
   }
 }
