@@ -7,16 +7,12 @@
 
 class MelodyPlayer {
 public:
-#ifdef ESP32
   /**
    * pwmChannel is optional and you have to configure it only if you play will
    * simultaneous melodies.
    * volume is the PWM duty cycle (0-255), default is 125.
    */
   MelodyPlayer(unsigned char pin, unsigned char pwmChannel = 0, bool offLevel = HIGH, unsigned char volume = 125);
-#else
-  MelodyPlayer(unsigned char pin, bool offLevel = HIGH);
-#endif
 
   /**
    * Play the last melody in a synchrounus (blocking) way.
@@ -91,10 +87,8 @@ public:
 private:
   unsigned char pin;
 
-#ifdef ESP32
   unsigned char pwmChannel;
   unsigned char volume;
-#endif
 
   /**
    * The voltage to turn off the buzzer.

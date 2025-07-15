@@ -20,19 +20,11 @@ void MelodyPlayer::play() {
       Serial.println(String("Playing: frequency:") + computedNote.frequency
                      + " duration:" + computedNote.duration);
     if (melodyState->isSilence()) {
-#ifdef ESP32
-      ledcWrite(pwmChannel, 0);  // Set duty cycle to 0 for silence
-#else
-      noTone(pin);
-#endif
+      ledcWrite(pwmChannel, 0);
       delay(0.3f * computedNote.duration);
     } else {
-#ifdef ESP32
-      ledcChangeFrequency(pwmChannel, computedNote.frequency, 8);  // Change frequency while preserving duty cycle
-      ledcWrite(pwmChannel, volume);  // Ensure volume is applied
-#else
-      tone(pin, computedNote.frequency);
-#endif
+      ledcChangeFrequency(pwmChannel, computedNote.frequency, 8);
+      ledcWrite(pwmChannel, volume);
       delay(computedNote.duration);
     }
     melodyState->advance();
@@ -66,32 +58,13 @@ void changeTone(MelodyPlayer* player) {
     if (player->debug)
       Serial.println(String("Playing async: freq=") + computedNote.frequency + " dur=" + duration
                      + " iteration=" + player->melodyState->getIndex());
-
     if (player->melodyState->isSilence()) {
-#ifdef ESP32
-      ledcWrite(player->pwmChannel, 0);  // Set duty cycle to 0 for silence
-#else
-      tone(player->pin, 0);
-#endif
-
-#ifdef ESP32
+      ledcWrite(player->pwmChannel, 0);
       player->ticker.once_ms(duration, changeTone, player);
-#else
-      player->ticker.once_ms_scheduled(duration, std::bind(changeTone, player));
-#endif
     } else {
-#ifdef ESP32
       ledcChangeFrequency(player->pwmChannel, computedNote.frequency, 8);  // Change frequency while preserving duty cycle
-      ledcWrite(player->pwmChannel, player->volume);  // Ensure volume is applied
-#else
-      tone(player->pin, computedNote.frequency);
-#endif
-
-#ifdef ESP32
+      ledcWrite(player->pwmChannel, player->volume);
       player->ticker.once_ms(duration, changeTone, player);
-#else
-      player->ticker.once_ms_scheduled(duration, std::bind(changeTone, player));
-#endif
     }
     player->supportSemiNote = millis() + duration;
   } else {
@@ -106,11 +79,7 @@ void MelodyPlayer::playAsync() {
   state = State::PLAY;
 
   // Start immediately
-#ifdef ESP32
   ticker.once(0, changeTone, this);
-#else
-  ticker.once_scheduled(0, std::bind(changeTone, this));
-#endif
 }
 
 void MelodyPlayer::playAsync(Melody& melody) {
@@ -168,19 +137,11 @@ void MelodyPlayer::duplicateMelodyTo(MelodyPlayer& destPlayer) {
   }
 }
 
-#ifdef ESP32
 MelodyPlayer::MelodyPlayer(unsigned char pin, unsigned char pwmChannel, bool offLevel, unsigned char volume)
   : pin(pin), pwmChannel(pwmChannel), offLevel(offLevel), volume(volume), state(State::STOP), melodyState(nullptr) {
   pinMode(pin, OUTPUT);
   digitalWrite(pin, offLevel);
 };
-#else
-MelodyPlayer::MelodyPlayer(unsigned char pin, bool offLevel)
-  : pin(pin), offLevel(offLevel), state(State::STOP), melodyState(nullptr) {
-  pinMode(pin, OUTPUT);
-  digitalWrite(pin, offLevel);
-};
-#endif
 
 void MelodyPlayer::haltPlay() {
   // Stop player, but do not reset the melodyState
@@ -189,43 +150,28 @@ void MelodyPlayer::haltPlay() {
 }
 
 void MelodyPlayer::turnOn() {
-#ifdef ESP32
   const int resolution = 8;
   // 2000 is a frequency, it will be changed at the first play
   ledcSetup(pwmChannel, 2000, resolution);
   ledcAttachPin(pin, pwmChannel);
   ledcWrite(pwmChannel, volume);
-#endif
 }
 
 void MelodyPlayer::setVolume(unsigned char newVolume) {
-#ifdef ESP32
   volume = newVolume;
   // If PWM is currently active, apply the new volume immediately
   if (state == State::PLAY) {
     ledcWrite(pwmChannel, volume);
   }
-#endif
 }
 
 unsigned char MelodyPlayer::getVolume() const {
-#ifdef ESP32
   return volume;
-#else
-  return 0; // Volume control not supported on non-ESP32 platforms
-#endif
 }
 
 void MelodyPlayer::turnOff() {
-#ifdef ESP32
   ledcWrite(pwmChannel, 0);
   ledcDetachPin(pin);
-#else
-  // Remember that this will set LOW output, it doesn't mean that buzzer is off (look at offLevel
-  // for more info).
-  noTone(pin);
-#endif
-
   pinMode(pin, OUTPUT);
   digitalWrite(pin, offLevel);
 }
