@@ -196,7 +196,8 @@ String buildColourLEDControlHTML() {
 String buildBuzzerControlHTML() {
   String html = "";
   html += "<div><label>Volume:&nbsp;</label><input id=\"buzzerVolume\" type=\"number\" min=\"0\" max=\"255\" value=\"" + String(buzzerVolume) + "\"><input type=\"button\" value=\"Set\" onclick=\"submitApiRequest('/api/buzzer/volume/' + getElementById('buzzerVolume').value);return false;\"></div>";
-  html += "<div><input type=\"button\" value=\"Test Buzzer\" onclick=\"submitApiRequest('/api/buzzer/test');return false;\" class=\"button\"></div>";
+  html += "<br/>";
+  html += "<div><label>Test Tune:&nbsp;</label><input id=\"buzzerTune\" type=\"number\" min=\"0\" max=\"13\"\"><input type=\"button\" value=\"Test Buzzer\" onclick=\"submitApiRequest('/api/buzzer/test/' + getElementById('buzzerTune').value);return false;\" class=\"button button-off\"></div>";
   return html;
 }
 
@@ -543,7 +544,12 @@ void processBuzzerControl(AsyncWebServerRequest *request, String setting, String
     request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
   } else if (setting == "test") {
     // Play a test tone to demonstrate the current volume
-    notifyAudibleTone(12);
+    if (value == "" || value == NULL) {
+      notifyAudibleTone(12);
+    }
+    else {
+      notifyAudibleTone(value.toInt());
+    }
     request->send(200, "application/json", "{\"success\":true,\"action\":\"test\"}");
   } else {
     request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
