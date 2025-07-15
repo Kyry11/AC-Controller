@@ -32,7 +32,7 @@ const int apiPort = 80;
 #define CHANNEL           0
 
 #define BUZZER_PIN 4
-uint8_t buzzerVolume = 5; // 0-255, 5 default
+uint8_t buzzerVolume = 32; // 0-255, 32 default
 MelodyPlayer player(BUZZER_PIN, 0U, true, buzzerVolume);
 
 CRGB leds[LEDS_COUNT];
@@ -342,7 +342,7 @@ String buildHtmlPage() {
   html += "  reloadCurrentStateAsync().then(() => connectWebSocket());";
   html += "});";
   html += "</script></head>";
-  html += "<body><h1>Fujitsu AC & Zone Controller</h1><br/><h3>v1.077</h3>";
+  html += "<body><h1>Fujitsu AC & Zone Controller</h1><h3>v1.1</h3>";
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
@@ -391,16 +391,102 @@ void processApiStatusRoute(AsyncWebServerRequest *request) {
   request->send(200, "application/json", buildCurrentStatePayload());
 }
 
-void notifyAudibleTone() {
+// Global variable to track which melody to play next
+uint8_t currentMelodyIndex = 0;
 
-  const int nNotes = 8;
-  String notes[nNotes] = { "C4", "G3", "G3", "A3", "G3", "SILENCE", "B3", "C4" };
-  const int timeUnit = 175;
+Melody getMelodyByIndex(int index) {
+  switch(index) {
+    case 0: {
+      // Twinkle Twinkle Little Star
+      const int nNotes = 14;
+      String notes[nNotes] = { "C4", "C4", "G4", "G4", "A4", "A4", "G4", "F4", "F4", "E4", "E4", "D4", "D4", "C4" };
+      return MelodyFactory.load("Twinkle Twinkle", 400, notes, nNotes);
+    }
+    case 1: {
+      // Take On Me (using RTTTL format)
+      String rtttl = "TakeOnMe:d=4,o=4,b=160:8f#5,8f#5,8f#5,8d5,8p,8b,8p,8e5,8p,8e5,8p,8e5,8g#5,8g#5,8a5,8b5,8a5,8a5,8a5,8e5,8p,8d5,8p,8f#5,8p,8f#5,8p,8f#5,8e5,8e5,8f#5,8e5";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 2: {
+      // Tetris Theme (simplified)
+      const int nNotes = 20;
+      String notes[nNotes] = { "E5", "B4", "C5", "D5", "C5", "B4", "A4", "A4", "C5", "E5", "D5", "C5", "B4", "B4", "C5", "D5", "E5", "C5", "A4", "A4" };
+      return MelodyFactory.load("Tetris Theme", 150, notes, nNotes);
+    }
+    case 3: {
+      // Nokia Ringtone
+      const int nNotes = 13;
+      String notes[nNotes] = { "E5", "D5", "F#4", "G#4", "C#5", "B4", "D4", "E4", "B4", "A4", "C#4", "E4", "A4" };
+      return MelodyFactory.load("Nokia Ringtone", 180, notes, nNotes);
+    }
+    case 4: {
+      // Half Double
+      String rtttl = "HalfDouble:d=16,o=5,b=200:c6,f6,c7,c6,f6,c7,c6,f6,c7";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 5: {
+      // Tripple swirl
+      String rtttl = "Triiple:d=8,o=5,b=635:c,e,g,c,e,g,c,e,g,c6,e6,g6,c6,e6,g6,c6,e6,g6,c7,e7,g7,c7,e7,g7,c7,e7,g7";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 6: {
+      // Pling 2
+      String rtttl = "Pling2:d=16,o=7,b=140:f#7,32p,e7";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 7: {
+      // Ravel - Bolero
+      String rtttl = "Bolero:o=5,d=16,b=80,b=80:c6,8c6,b,c6,d6,c6,b,a,8c6,c6,a,4c6,8c6,b,c6,a,g,e,f,2g,g,f,e,d,e,f,g,a,4g,4g,g,a,b,a,g,f,e,d,e,d,8c,8c,c,d,8e,8f,4d,2g";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 8: {
+      // Scale
+      String rtttl = "Scale:o=5,d=32,b=160,b=160:c,d,e,f,g,a,b,c6,b,a,g,f,e,d,c";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 9: {
+      // Verve (Bitter Sweet Symphony)
+      String rtttl = "Verve:o=5,d=8,b=80,b=80:b4,d,b4,c,a4,c,p,f,c,f,p,e,c,e,p,b4,d,b4,c,a4,c,p,f,c,f,p,e,c,e";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 10: {
+      // Stevie Wonder - I just called
+      String rtttl = "IJustCalled:d=4,o=5,b=160:8c6,c6,2a,8c6,2b,8g,b,2c6,8p,8c6,c6,2a,8c6,b.,8a,g,a,2e,8p,8c6,c6,2a,8c6,2b,8g,b,2c6,8c6,c6,a.,8g,f,d,e,d,c,d,2c";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 11: {
+      // Scooter - How much is that fish
+      String rtttl = "HowMuchI:d=4,o=6,b=125:8g,8g,16f,16e,f,8d.,16c,8d,8g,8g,8f,8e,8g,8g,16f,16e,f,d,8e,8c,2d,8p,8d,8f,8g,a,a,8a_,8g,2a,8g,8g,16f,16e,f,d,8f,8g,8g,8f,8e,8g,8g,16f,16e,f,d,8e,8c,2d";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 12: {
+      // Sonic Green Hill Zone
+      String rtttl = "SonicGreenHill:d=4,o=5,b=125:16c7,32p,8a6,32p,16c7,32p,8b6,32p,16c7,32p,8b6,32p,g6,p,16a6,32p,16e7,32p,8d7,32p,16c7,32p,8b6,32p,16c7,32p,8b6,32p,g6,p,16c7,32p,8a6,32p,16c7,32p,8b6,32p,16c7,32p,8b6,32p,g6,p,16a6,32p,8f6,32p,16a6,32p,8g6,32p,16a6,32p,8g6,32p,c6";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    case 13: {
+      // Sonic Chemical Plant Zone (Hydro Zone)
+      String rtttl = "SonicChemicalPlant:d=4,o=5,b=125:16f#,16a,8c#6,16b,16a,16b,8a,p,16f#,16a,8c#6,16b,16a,16b,8a,16b,16p,16a,16p,16b,16p,8c#6,16a,16f#,16p,8f#,p,16f#,16a,8c#6,16b,16a,16b,8a,p,16f#,16a,8c#6,16b,16a,16b,8a,16b,16p,16a,16p,16b,16p,8c#6,16a,16f#,16p,8f#,p,16b,16p,8b,16a,16b,16p,16b,32p,16a,8b,16a,16p,16c#6,16a,16f#,p,16f#,16p,16b,16p,8b,16a,16b,16p,8b,16a,16b,16p,16a,32p,16c#6";
+      return MelodyFactory.loadRtttlString(rtttl.c_str());
+    }
+    default: {
+      // Default back to original melody
+      const int nNotes = 8;
+      String notes[nNotes] = { "C4", "G3", "G3", "A3", "G3", "SILENCE", "B3", "C4" };
+      return MelodyFactory.load("Nice Melody", 175, notes, nNotes);
+    }
+  }
+}
 
-  Melody melody = MelodyFactory.load("Nice Melody", timeUnit, notes, nNotes);
+void notifyAudibleTone(uint8_t index = currentMelodyIndex) {
+  // Cycle through different melodies each time this function is called
+  Melody melody = getMelodyByIndex(index);
 
-  Serial.println(String(" Title:") + melody.getTitle());
-  Serial.println(String(" Time unit:") + melody.getTimeUnit());
+  // Move to next melody for next time (cycle through 0-13)
+  currentMelodyIndex = (currentMelodyIndex + 1) % 14;
+
+  Serial.println(String(" Title: ") + melody.getTitle());
+  Serial.println(String(" Time unit: ") + melody.getTimeUnit());
   Serial.println("Start playing in non-blocking mode...");
 
   player.playAsync(melody);
@@ -413,7 +499,7 @@ void notifyWSSubscribers() {
 
 void notifyObservers() {
   notifyWSSubscribers();
-  notifyAudibleTone();
+  notifyAudibleTone(4);
 }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -457,7 +543,7 @@ void processBuzzerControl(AsyncWebServerRequest *request, String setting, String
     request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
   } else if (setting == "test") {
     // Play a test tone to demonstrate the current volume
-    notifyAudibleTone();
+    notifyAudibleTone(12);
     request->send(200, "application/json", "{\"success\":true,\"action\":\"test\"}");
   } else {
     request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
@@ -715,7 +801,7 @@ void setup() {
     // Ensure status led is LOW after blink
     digitalWrite(STATUS_LED_PIN, LOW);
 
-    notifyAudibleTone();
+    notifyAudibleTone(13);
 
     // Set up existing server routes for STA mode
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ processRootRoute(request); });
