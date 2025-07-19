@@ -20,11 +20,10 @@ void MelodyPlayer::play() {
       Serial.println(String("Playing: frequency:") + computedNote.frequency
                      + " duration:" + computedNote.duration);
     if (melodyState->isSilence()) {
-      ledcWrite(pwmChannel, 0);
+      ledcWriteTone(pwmChannel, 0);
       delay(0.3f * computedNote.duration);
     } else {
-      ledcChangeFrequency(pwmChannel, computedNote.frequency, 8);
-      ledcWrite(pwmChannel, volume);
+      ledcWriteTone(pwmChannel, computedNote.frequency);
       delay(computedNote.duration);
     }
     melodyState->advance();
@@ -58,17 +57,36 @@ void changeTone(MelodyPlayer* player) {
     if (player->debug)
       Serial.println(String("Playing async: freq=") + computedNote.frequency + " dur=" + duration
                      + " iteration=" + player->melodyState->getIndex());
+
     if (player->melodyState->isSilence()) {
-      ledcWrite(player->pwmChannel, 0);
+      if(!player->muted)
+      {
+        ledcWriteTone(player->pwmChannel, 0);
+      }
+
       player->ticker.once_ms(duration, changeTone, player);
     } else {
-      ledcChangeFrequency(player->pwmChannel, computedNote.frequency, 8);  // Change frequency while preserving duty cycle
-      ledcWrite(player->pwmChannel, player->volume);
+
+      if(!player->muted)
+      {
+        ledcWriteTone(player->pwmChannel, computedNote.frequency);
+        ledcWrite(player->pwmChannel, player->volume);
+      }
+
       player->ticker.once_ms(duration, changeTone, player);
     }
     player->supportSemiNote = millis() + duration;
   } else {
+    // End of the melody
     player->stop();
+    if(player->loop)
+    { // Loop mode => start over
+      player->playAsync();
+    }
+    else if(player->stopCallback != NULL)
+    {
+      player->stopCallback();
+    }
   }
 }
 
@@ -82,9 +100,11 @@ void MelodyPlayer::playAsync() {
   ticker.once(0, changeTone, this);
 }
 
-void MelodyPlayer::playAsync(Melody& melody) {
+void MelodyPlayer::playAsync(Melody& melody, bool loopMelody, void(*callback)(void)) {
   if (!melody) { return; }
   melodyState = make_unique<MelodyState>(melody);
+  loop = loopMelody;
+  stopCallback = callback;
   playAsync();
 }
 
@@ -137,8 +157,8 @@ void MelodyPlayer::duplicateMelodyTo(MelodyPlayer& destPlayer) {
   }
 }
 
-MelodyPlayer::MelodyPlayer(unsigned char pin, unsigned char pwmChannel, bool offLevel, unsigned char volume)
-  : pin(pin), pwmChannel(pwmChannel), offLevel(offLevel), volume(volume), state(State::STOP), melodyState(nullptr) {
+MelodyPlayer::MelodyPlayer(unsigned char pin, unsigned char pwmChannel, bool offLevel)
+  : pin(pin), pwmChannel(pwmChannel), offLevel(offLevel), state(State::STOP), melodyState(nullptr) {
   pinMode(pin, OUTPUT);
   digitalWrite(pin, offLevel);
 };
@@ -150,6 +170,7 @@ void MelodyPlayer::haltPlay() {
 }
 
 void MelodyPlayer::turnOn() {
+
   const int resolution = 8;
   // 2000 is a frequency, it will be changed at the first play
   ledcSetup(pwmChannel, 2000, resolution);
@@ -157,21 +178,32 @@ void MelodyPlayer::turnOn() {
   ledcWrite(pwmChannel, volume);
 }
 
-void MelodyPlayer::setVolume(unsigned char newVolume) {
-  volume = newVolume;
-  // If PWM is currently active, apply the new volume immediately
-  if (state == State::PLAY) {
+void MelodyPlayer::setVolume(byte newVolume) {
+  volume = newVolume/2;
+  if(state == State::PLAY)
+  {
     ledcWrite(pwmChannel, volume);
   }
-}
-
-unsigned char MelodyPlayer::getVolume() const {
-  return volume;
 }
 
 void MelodyPlayer::turnOff() {
   ledcWrite(pwmChannel, 0);
   ledcDetachPin(pin);
+
   pinMode(pin, OUTPUT);
   digitalWrite(pin, offLevel);
+}
+
+void MelodyPlayer::mute() {
+  muted = true;
+}
+
+void MelodyPlayer::unmute() {
+  ledcAttachPin(pin, pwmChannel);
+  muted = false;
+}
+
+void MelodyPlayer::changeTempo(int newTempo) {
+  if (melodyState == nullptr) { return; }
+  melodyState->changeTempo(newTempo);
 }

@@ -32,8 +32,8 @@ const int apiPort = 80;
 #define CHANNEL           0
 
 #define BUZZER_PIN 4
-uint8_t buzzerVolume = 32; // 0-255, 32 default
-MelodyPlayer player(BUZZER_PIN, 0U, true, buzzerVolume);
+uint8_t INITIAL_BUZZER_VOLUME = 192; // 0-255, 32 default
+MelodyPlayer player(BUZZER_PIN, 0U, true);
 
 CRGB leds[LEDS_COUNT];
 FujitsuAC fujitsu;
@@ -195,7 +195,7 @@ String buildColourLEDControlHTML() {
 
 String buildBuzzerControlHTML() {
   String html = "";
-  html += "<div><label>Volume:&nbsp;</label><input id=\"buzzerVolume\" type=\"number\" min=\"0\" max=\"255\" value=\"" + String(buzzerVolume) + "\"><input type=\"button\" value=\"Set\" onclick=\"submitApiRequest('/api/buzzer/volume/' + getElementById('buzzerVolume').value);return false;\"></div>";
+  html += "<div><label>Volume:&nbsp;</label><input id=\"buzzerVolume\" type=\"number\" min=\"0\" max=\"255\" value=\"" + String(INITIAL_BUZZER_VOLUME) + "\"><input type=\"button\" value=\"Set\" onclick=\"submitApiRequest('/api/buzzer/volume/' + getElementById('buzzerVolume').value);return false;\"></div>";
   html += "<br/>";
   html += "<div><label>Test Tune:&nbsp;</label><input id=\"buzzerTune\" type=\"number\" min=\"0\" max=\"13\"\"><input type=\"button\" value=\"Test Buzzer\" onclick=\"submitApiRequest('/api/buzzer/test/' + getElementById('buzzerTune').value);return false;\" class=\"button button-off\"></div>";
   return html;
@@ -382,7 +382,7 @@ String buildCurrentStatePayload() {
   colourled["state"] = colourLEDState;
   colourled["brightness"] = colourLEDBrightness; // Already uint8_t, no need for String()
   JsonObject buzzer = doc["buzzer"].to<JsonObject>();
-  buzzer["volume"] = buzzerVolume;
+  buzzer["volume"] = INITIAL_BUZZER_VOLUME;
   String payload;
   serializeJson(doc, payload);
   return payload;
@@ -507,7 +507,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
   switch (type) {
     case WS_EVT_CONNECT:
       Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-      notifyObservers();
+      // notifyObservers(); // Not sure if there is value in notifying all clients when a new client connects
       break;
     case WS_EVT_DISCONNECT: Serial.printf("WebSocket client #%u disconnected\n", client->id()); break;
     case WS_EVT_DATA: Serial.printf("WebSocket client #%u sent data: %s\n", client->id(), (char*)data); break;
@@ -536,9 +536,9 @@ void processBuzzerControl(AsyncWebServerRequest *request, String setting, String
   if (setting == "volume") {
     uint8_t newVolume = value.toInt();
     if (newVolume > 255) newVolume = 255; // Clamp to valid range
-    if (buzzerVolume != newVolume) {
-      buzzerVolume = newVolume;
-      player.setVolume(buzzerVolume);
+    if (INITIAL_BUZZER_VOLUME != newVolume) {
+      INITIAL_BUZZER_VOLUME = newVolume;
+      player.setVolume(INITIAL_BUZZER_VOLUME);
       changed = true;
     }
     request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
@@ -762,6 +762,8 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println("\n\nBooting Baum's Fujitsu AC & Zone Controller...");
+
+  player.setVolume(INITIAL_BUZZER_VOLUME);
 
   if (connectToWiFi()) {
     // --- STA Mode: WiFi Connected - Initialize full functionality ---
