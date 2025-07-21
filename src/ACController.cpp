@@ -32,7 +32,7 @@ const int apiPort = 80;
 #define CHANNEL           0
 
 #define BUZZER_PIN 4
-uint8_t INITIAL_BUZZER_VOLUME = 192; // 0-255, 32 default
+uint8_t INITIAL_BUZZER_VOLUME = 96; // 0-255, 32 default
 MelodyPlayer player(BUZZER_PIN, 0U, true);
 
 CRGB leds[LEDS_COUNT];
@@ -280,7 +280,12 @@ String buildHtmlPage() {
   html += "      }";
   html += "    } catch (e) { console.error('Error parsing WebSocket message:', e); }";
   html += "  };";
-  html += "  socket.onclose = function(event) { console.log('WebSocket disconnected, attempting to reconnect...'); setTimeout(connectWebSocket, 3000); };";
+  html += "  socket.onclose = function(event) {";
+  html += "    console.log('WebSocket disconnected, attempting to reconnect...');";
+  html += "    if (!document.hidden) {";
+  html += "      setTimeout(connectWebSocket, 3000);";
+  html += "    }";
+  html += "  };";
   html += "  socket.onerror = function(error) { console.error('WebSocket error:', error); socket.close(); };";
   html += "}";
   html += "function updateUIFromState(state) {";
@@ -886,7 +891,7 @@ void processPinStateChanges() {
     }
 
     if (changed) {
-      notifyObservers();
+      // notifyObservers(); // Commenting as test to see performance effect
     }
   }
 }
