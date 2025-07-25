@@ -324,8 +324,8 @@ String buildHtmlPage() {
   html += "    const acStateToggle = document.getElementById('acstatetoggle');";
   html += "    if (acStateToggle) {";
   html += "      acStateToggle.dataset.state = state.ac.power ? '1' : '0';";
-  html += "      const acStateLabel = document.getElementById('acstatelabel')";
-  html += "      if (acStateLabel) acStateLabel.innerHTML = 'Power: ' + (state.ac.power ? 'On' : 'Off');";
+  html += "      const acStateLabel = document.getElementById('acstatelabel');";
+  html += "      if (acStateLabel) { acStateLabel.innerHTML = 'Power: ' + (state.ac.power ? 'On' : 'Off'); }";
   html += "    }";
   html += "    const acModeSelect = document.getElementById('acmodeselect');";
   html += "    if (acModeSelect) acModeSelect.value = state.ac.mode;";
