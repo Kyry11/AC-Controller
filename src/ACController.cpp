@@ -32,7 +32,7 @@ const int apiPort = 80;
 #define CHANNEL           0
 
 #define BUZZER_PIN 4
-uint8_t INITIAL_BUZZER_VOLUME = 96; // 0-255, 32 default
+uint8_t INITIAL_BUZZER_VOLUME = 64; // 0-255, 32 default
 MelodyPlayer player(BUZZER_PIN, 0U, true);
 
 CRGB leds[LEDS_COUNT];
@@ -162,7 +162,7 @@ String buildACControlHTML() {
   String acFanMode = ACFanModeToString(static_cast<ACFanMode>(fujitsu.getFanMode()));
   String acTemp = String((int)fujitsu.getTemp());
   String html = "";
-  html += "<label>Power: " + acState + "</label>&nbsp;<input id=\"acstatetoggle\" type=\"button\" value=\"Toggle\" data-state=\"" + String(fujitsu.getOnOff() ? "1" : "0") + "\" onclick=\"submitApiRequest('/api/ac/power/' + (this.dataset.state === '1' ? '0' : '1')); return false;\">";
+  html += "<label id=\"acstatelabel\">Power: " + acState + "</label>&nbsp;<input id=\"acstatetoggle\" type=\"button\" value=\"Toggle\" data-state=\"" + String(fujitsu.getOnOff() ? "1" : "0") + "\" onclick=\"submitApiRequest('/api/ac/power/' + (this.dataset.state === '1' ? '0' : '1')); return false;\">";
   html += "<br/>&nbsp;<br/><label for=\"acmodeselect\">AC Mode:</label>&nbsp;";
   html += "<select id=\"acmodeselect\" onchange=\"submitApiRequest('/api/ac/mode/' + this.value.toLowerCase()); return false;\">";
   html += String("<option value=\"Fan\"") + (acMode == "Fan" ? " selected" : "") + ">Fan</option>";
@@ -321,8 +321,8 @@ String buildHtmlPage() {
   html += "    const acStateToggle = document.getElementById('acstatetoggle');";
   html += "    if (acStateToggle) {";
   html += "      acStateToggle.dataset.state = state.ac.power ? '1' : '0';";
-  html += "      const pElement = acStateToggle.previousElementSibling;";
-  html += "      if(pElement && pElement.tagName === 'P') pElement.innerHTML = 'Power: ' + (state.ac.power ? 'On' : 'Off');";
+  html += "      const acStateLabel = document.getElementById('acstatelabel')";
+  html += "      if (acStateLabel) acStateLabel.innerHTML = 'Power: ' + (state.ac.power ? 'On' : 'Off');";
   html += "    }";
   html += "    const acModeSelect = document.getElementById('acmodeselect');";
   html += "    if (acModeSelect) acModeSelect.value = state.ac.mode;";
@@ -348,7 +348,7 @@ String buildHtmlPage() {
   html += "  reloadCurrentStateAsync().then(() => connectWebSocket());";
   html += "});";
   html += "</script></head>";
-  html += "<body><h1>Fujitsu AC & Zone Controller</h1><h3>v1.1</h3>";
+  html += "<body><h1>Fujitsu AC & Zone Controller</h1><h3>v1.1.1</h3>";
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
@@ -891,7 +891,7 @@ void processPinStateChanges() {
     }
 
     if (changed) {
-      // notifyObservers(); // Commenting as test to see performance effect
+      notifyObservers();
     }
   }
 }
