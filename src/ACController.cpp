@@ -65,6 +65,9 @@ int colourCycleOffset = 0;
 const int pinStateCheckInterval = 250;
 unsigned long pinStateCheckLastMillis = millis();
 
+const int fujitsuConnectionTimeout = 2000;
+unsigned long fujitsuLastConnected = millis();
+
 String htmlWiFiConfigCaptivePortal = R"rawliteral(
 <!DOCTYPE HTML><html><head>
 <title>Baum's AC Module Config</title>
@@ -848,8 +851,15 @@ void setup() {
 
 void processFujitsuComms() {
   if(fujitsu.waitForFrame()) {
+    fujitsuLastConnected = millis();
     delay(60);
     fujitsu.sendPendingFrame();
+  }
+
+  if (millis() - fujitsuLastConnected > fujitsuConnectionTimeout) {
+    Serial.println("Fujitsu AC connection timed out, resetting connection...");
+    fujitsu.resetConnection();
+    fujitsuLastConnected = millis();
   }
 }
 

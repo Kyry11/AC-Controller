@@ -98,6 +98,13 @@ void FujitsuAC::connect(HardwareSerial *serial, bool secondary, int rxPin=-1, in
     lastFrameReceived = 0;
 }
 
+void FujitsuAC::resetConnection() {
+    _serial->flush();
+    controllerLoggedIn = false;
+    seenSecondaryController = false;
+    lastFrameReceived = 0;
+}
+
 void FujitsuAC::printFrame(byte buf[8], ControlFrame ff) {
     // Serial.printf("%X %X %X %X %X %X %X %X  ", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
     // Serial.printf(" mSrc: %d mDst: %d mType: %d write: %d login: %d unknown: %d onOff: %d temp: %d, mode: %d cP:%d uM:%d cTemp:%d acError:%d \n", ff.messageSource, ff.messageDest, ff.messageType, ff.writeBit, ff.loginBit, ff.unknownBit, ff.onOff, ff.temperature, ff.acMode, ff.controllerPresent, ff.updateMagic, ff.controllerTemp, ff.acError);

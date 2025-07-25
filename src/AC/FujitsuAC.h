@@ -95,6 +95,7 @@ class FujitsuAC
   public:
     void connect(HardwareSerial *serial, bool secondary);
     void connect(HardwareSerial *serial, bool secondary, int rxPin, int txPin);
+    void resetConnection();
 
     bool waitForFrame();
     void sendPendingFrame();
