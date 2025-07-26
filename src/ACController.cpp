@@ -2,6 +2,7 @@
 #define ARRAY_SIZE(arr)   (sizeof(arr) / sizeof((arr)[0]))
 
 #include <WiFi.h>
+#include <PubSubClient.h>
 #include <ESPAsyncWebServer.h>
 #include "OTA/OTA.h"
 #include <ArduinoJson.h>
@@ -13,9 +14,23 @@
 #include "melody_player/melody_player.h"
 #include "melody_player/melody_factory.h"
 
+#define MAX_MQTT_MESSAGES 10
+String lastMqttMessages[MAX_MQTT_MESSAGES];
+int mqttMessageIndex = 0;
+
+void addMqttMessage(const String& message) {
+    lastMqttMessages[mqttMessageIndex] = message;
+    mqttMessageIndex = (mqttMessageIndex + 1) % MAX_MQTT_MESSAGES;
+}
+
 // Preferences keys for eeprom config
 const char* PREF_KEY_SSID = "wifi_ssid";
 const char* PREF_KEY_PASS = "wifi_pass";
+const char* PREF_KEY_MQTT_BROKER = "mqtt_broker";
+const char* PREF_KEY_MQTT_PORT = "mqtt_port";
+const char* PREF_KEY_MQTT_USER = "mqtt_user";
+const char* PREF_KEY_MQTT_PASS = "mqtt_pass";
+const char* PREF_KEY_MQTT_TOPIC = "mqtt_topic";
 
 // AP Mode settings for WiFi configuration
 const char* AP_CONFIG_SSID = "Baums AC Controller"; // Unique name for config AP
@@ -24,6 +39,14 @@ const byte DNS_PORT = 53;
 
 Preferences preferences;
 DNSServer dnsServer;
+
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+char mqttBroker[64] = "";
+int mqttPort = 1883;
+char mqttUser[32] = "";
+char mqttPassword[64] = "";
+char mqttTopic[32] = "";
 
 const int apiPort = 80;
 
@@ -109,6 +132,8 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
 void process404(AsyncWebServerRequest *request);
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
 String buildHtmlPage(); // Keep existing HTML builder
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void reconnectMQTT();
 // --- End Forward declarations ---
 
 
@@ -204,6 +229,32 @@ String buildBuzzerControlHTML() {
   return html;
 }
 
+String buildMQTTControlHTML() {
+    String html = "<div>";
+    html += "<label for=\"mqtt_broker\">MQTT Broker:</label><input type=\"text\" id=\"mqtt_broker\" name=\"mqtt_broker\" value=\"" + String(mqttBroker) + "\"><br>";
+    html += "<label for=\"mqtt_port\">MQTT Port:</label><input type=\"number\" id=\"mqtt_port\" name=\"mqtt_port\" value=\"" + String(mqttPort) + "\"><br>";
+    html += "<label for=\"mqtt_user\">MQTT User:</label><input type=\"text\" id=\"mqtt_user\" name=\"mqtt_user\" value=\"" + String(mqttUser) + "\"><br>";
+    html += "<label for=\"mqtt_pass\">MQTT Password:</label><input type=\"password\" id=\"mqtt_pass\" name=\"mqtt_pass\" value=\"" + String(mqttPassword) + "\"><br>";
+    html += "<label for=\"mqtt_topic\">MQTT Topic:</label><input type=\"text\" id=\"mqtt_topic\" name=\"mqtt_topic\" value=\"" + String(mqttTopic) + "\"><br>";
+    html += "<input type=\"button\" value=\"Save MQTT Config\" onclick=\"saveMqttConfig()\">";
+    html += "</div>";
+    html += "<script>";
+    html += "function saveMqttConfig() {";
+    html += "  const broker = document.getElementById('mqtt_broker').value;";
+    html += "  const port = document.getElementById('mqtt_port').value;";
+    html += "  const user = document.getElementById('mqtt_user').value;";
+    html += "  const pass = document.getElementById('mqtt_pass').value;";
+    html += "  const topic = document.getElementById('mqtt_topic').value;";
+    html += "  const url = `/api/mqtt/save?broker=${encodeURIComponent(broker)}&port=${port}&user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}&topic=${encodeURIComponent(topic)}`;";
+    html += "  fetch(url, { method: 'POST' })";
+    html += "    .then(response => response.json())";
+    html += "    .then(data => { console.log('MQTT Config Saved:', data); alert('MQTT Config Saved. The device will now restart.'); ESP.restart(); })";
+    html += "    .catch(error => { console.error('Error saving MQTT config:', error); });";
+    html += "}";
+    html += "</script>";
+    return html;
+}
+
 String buildOutputPinsHTML() {
   String buttons = "";
   for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
@@ -277,6 +328,13 @@ String buildHtmlPage() {
   html += "        logEntry.textContent = data.message;";
   html += "        logContainer.appendChild(logEntry);";
   html += "        logContainer.scrollTop = logContainer.scrollHeight;";
+  html += "      } else if (data.type === 'mqtt_log') {";
+  html += "        console.log('Processing received ws mqtt_log:', data);";
+  html += "        const mqttLogContainer = document.getElementById('mqtt-log-container');";
+  html += "        const logEntry = document.createElement('div');";
+  html += "        logEntry.textContent = data.message;";
+  html += "        mqttLogContainer.appendChild(logEntry);";
+  html += "        mqttLogContainer.scrollTop = mqttLogContainer.scrollHeight;";
   html += "      } else {";
   html += "        console.log('Processing received ws state:', data);";
   html += "        updateUIFromState(data);";
@@ -354,11 +412,14 @@ String buildHtmlPage() {
   html += "<body><h1>Fujitsu AC & Zone Controller</h1><h3>v1.1.1</h3>";
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
+  html += "<h3>MQTT Configuration</h3><div>" + buildMQTTControlHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
   html += "<h3>Buzzer Control</h3><div class=\"button-container\">" + buildBuzzerControlHTML() + "</div>";
   html += "<h3>Available GPIO Output Control Pins</h3><div class=\"button-container\">" + buildOutputPinsHTML() + "</div>";
   html += "<h3>Available Input Control Pins</h3><div class=\"button-container\">" + buildInputPinsHTML() + "</div>";
   html += "<h3><a href=\"/update\">Upload new firmware</a></h3>";
+  html += "<h3>MQTT Messages</h3><div id=\"mqtt-log-container\" style=\"height: 200px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; text-align: left; background-color: #f9f9f9;\"></div>";
+  html += "<input type=\"button\" value=\"Clear logs\" onclick=\"getElementById('mqtt-log-container').innerHTML = '';return false;\"/>";
   html += "<h3>Device Logs</h3><div id=\"log-container\" style=\"height: 200px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; text-align: left; background-color: #f9f9f9;\"></div>";
   html += "</body></html>";
   return html;
@@ -398,6 +459,19 @@ String buildCurrentStatePayload() {
 
 void processApiStatusRoute(AsyncWebServerRequest *request) {
   request->send(200, "application/json", buildCurrentStatePayload());
+}
+
+void processSaveMqttConfigRoute(AsyncWebServerRequest *request) {
+    preferences.begin("mqtt-config", false);
+    if (request->hasParam("broker")) preferences.putString(PREF_KEY_MQTT_BROKER, request->getParam("broker")->value());
+    if (request->hasParam("port")) preferences.putInt(PREF_KEY_MQTT_PORT, request->getParam("port")->value().toInt());
+    if (request->hasParam("user")) preferences.putString(PREF_KEY_MQTT_USER, request->getParam("user")->value());
+    if (request->hasParam("pass")) preferences.putString(PREF_KEY_MQTT_PASS, request->getParam("pass")->value());
+    if (request->hasParam("topic")) preferences.putString(PREF_KEY_MQTT_TOPIC, request->getParam("topic")->value());
+    preferences.end();
+    request->send(200, "application/json", "{\"success\":true}");
+    delay(1000);
+    ESP.restart();
 }
 
 // Global variable to track which melody to play next
@@ -504,11 +578,29 @@ void notifyAudibleTone(uint8_t index = currentMelodyIndex) {
 
 void notifyWSSubscribers() {
   ws.textAll(buildCurrentStatePayload());
+
+  JsonDocument doc;
+  doc["type"] = "mqtt_log";
+  for (int i = 0; i < MAX_MQTT_MESSAGES; i++) {
+    if (lastMqttMessages[i] != "") {
+        doc["message"] = lastMqttMessages[i];
+        String payload;
+        serializeJson(doc, payload);
+        ws.textAll(payload);
+    }
+  }
 }
 
 void notifyObservers() {
-  notifyWSSubscribers();
-  notifyAudibleTone(4);
+    notifyWSSubscribers();
+    notifyAudibleTone(4);
+
+    if (mqttClient.connected()) {
+        String payload = buildCurrentStatePayload();
+        mqttClient.publish((String(mqttTopic) + String("/status")).c_str(), payload.c_str(), true);
+        Serial.println("Published message to " + String(mqttTopic) + String("/status") + " with " + payload);
+        addMqttMessage("Published to " + String(mqttTopic) + String("/status") + ": " + payload);
+    }
 }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -570,17 +662,8 @@ void processOutputPinControl(AsyncWebServerRequest *request, String pinStr, Stri
   bool changed = false;
   if (valueStr == "press") {
     simulateButtonPressWithNegation(pin, 350);
-    // After press, the state might have toggled. We need to reflect the *new* actual state.
-    // For simplicity, we assume it might have changed and notify. A more robust way is to read state after press.
-    int outputIndex = findOutputIndexByPin(pin); // Re-check state after press
-    if (outputIndex != -1) {
-        // This is tricky: simulateButtonPressWithNegation toggles based on outputStates[outputIndex]
-        // So outputStates[outputIndex] should be updated by simulateButtonPressWithNegation or here.
-        // Let's assume simulateButtonPressWithNegation doesn't update outputStates, so we toggle it here.
-        // outputStates[outputIndex] = !outputStates[outputIndex]; // This might be incorrect if press doesn't always toggle
-    }
     changed = true; // Assume change for notification
-    request->send(200, "application/json", "{\"success\":true,\"action\":\"press\",\"pin\":" + pinStr + "}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"action\":\"press\",\"pin\":" + pinStr + "}");
   } else {
     bool newState = (valueStr.toInt() > 0);
     int outputIndex = findOutputIndexByPin(pin);
@@ -589,7 +672,7 @@ void processOutputPinControl(AsyncWebServerRequest *request, String pinStr, Stri
       outputStates[outputIndex] = newState;
       changed = true;
     }
-    request->send(200, "application/json", "{\"success\":true,\"pin\":" + pinStr + ",\"value\":" + valueStr + "}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"pin\":" + pinStr + ",\"value\":" + valueStr + "}");
   }
   if (changed) notifyObservers();
 }
@@ -605,7 +688,7 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
         fujitsu.setTemp(temp);
         changed = true;
     }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"temp\",\"value\":" + value + "}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"temp\",\"value\":" + value + "}");
 
   } else if (setting == "mode") {
 
@@ -622,7 +705,7 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
         fujitsu.setMode(newModeByte);
         changed = true;
     }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"mode\",\"value\":\"" + value + "\"}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"mode\",\"value\":\"" + value + "\"}");
 
   } else if (setting == "fan") {
 
@@ -640,7 +723,7 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
         fujitsu.setFanMode(newFanMode);
         changed = true;
     }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"fan\",\"value\":\"" + value + "\"}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"fan\",\"value\":\"" + value + "\"}");
 
   } else if (setting == "power") {
 
@@ -649,11 +732,11 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
         fujitsu.setOnOff(newPower);
         changed = true;
     }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"power\",\"value\":\"" + value + "\"}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"power\",\"value\":\"" + value + "\"}");
 
   } else {
 
-    request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown AC setting\"}"); return;
+    if (request) request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown AC setting\"}"); return;
 
   }
 
@@ -766,6 +849,54 @@ void startAPMode() {
 }
 // --- End WiFi Configuration and AP Mode Functions ---
 
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    String message;
+    for (unsigned int i = 0; i < length; i++) {
+        message += (char)payload[i];
+    }
+    String topicStr(topic);
+    addMqttMessage("Processing event on topic '" + topicStr + "' with payload: " + message);
+    Serial.println("Processing event on topic '" + topicStr + "' with payload: " + message);
+
+    if (topicStr == String(mqttTopic) + String("/status")) return; // Ignore our own updates to the world
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    if (error) {
+      Serial.print(F("Deserialisation of payload failed: "));
+      Serial.println(error.c_str());
+      return;
+    }
+
+    if (topicStr == String(mqttTopic) + String("/ac/set")) {
+        String setting = doc["setting"];
+        String value = doc["value"];
+        processACControl(nullptr, setting, value);
+    }
+
+    if (topicStr == String(mqttTopic) + String("/pin/set")) {
+        String pin = doc["pin"];
+        String value = doc["value"];
+        processOutputPinControl(nullptr, pin, value);
+    }
+}
+
+void reconnectMQTT() {
+    if (!mqttClient.connected()) {
+        Serial.print("Attempting MQTT connection...");
+        String clientId = "ACController" + WiFi.localIP().toString();
+        if (mqttClient.connect(clientId.c_str(), mqttUser, mqttPassword)) {
+            Serial.println("connected");
+            mqttClient.subscribe((String(mqttTopic) + String("/#")).c_str());
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" try again in 5 seconds");
+            delay(5000);
+        }
+    }
+}
+
 void setup() {
 
   Serial.begin(115200);
@@ -777,10 +908,24 @@ void setup() {
     // --- STA Mode: WiFi Connected - Initialize full functionality ---
     Serial.println("STA Mode: Initializing full device functionality...");
 
+    fujitsu.connect(&Serial2, true, acRxPin, acTxPin);
+
+    preferences.begin("mqtt-config", true);
+    preferences.getString(PREF_KEY_MQTT_BROKER, mqttBroker, sizeof(mqttBroker));
+    mqttPort = preferences.getInt(PREF_KEY_MQTT_PORT, 1883);
+    preferences.getString(PREF_KEY_MQTT_USER, mqttUser, sizeof(mqttUser));
+    preferences.getString(PREF_KEY_MQTT_PASS, mqttPassword, sizeof(mqttPassword));
+    preferences.getString(PREF_KEY_MQTT_TOPIC, mqttTopic, sizeof(mqttTopic));
+    preferences.end();
+
+    if (strlen(mqttBroker) > 0) {
+        mqttClient.setServer(mqttBroker, mqttPort);
+        mqttClient.setCallback(mqttCallback);
+        mqttClient.setBufferSize(MQTT_MAX_PACKET_SIZE);
+    }
+
     FastLED.addLeds<WS2812, LEDS_PIN, GRB>(leds, LEDS_COUNT);
     FastLED.setBrightness(colourLEDBrightness);
-
-    fujitsu.connect(&Serial2, true, acRxPin, acTxPin);
 
     for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
       initOutputPin(outputPins[i]);
@@ -790,21 +935,6 @@ void setup() {
       initInputPin(inputPins[i]);
       inputStates[i] = digitalRead(inputPins[i]) == HIGH;
     }
-
-    // // Initial output pin blink sequence (optional, can be removed if not desired after WiFi setup)
-    // for (int i = 0; i < 20; i++) {
-    //   delay(75);
-    //   String log = (i % 2 == 0) ? "!" : "¡";
-    //   uint8_t level = (i % 2 == 0) ? HIGH : LOW;
-    //   for (int j = 0; j < ARRAY_SIZE(outputPins); j++) {
-    //     Serial.print(log);
-    //     digitalWrite(outputPins[j], level);
-    //   }
-    // }
-    // // Ensure pins are LOW after blink
-    // for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
-    //   digitalWrite(outputPins[i], LOW);
-    // }
 
     // Initial status led blink sequence
     for (int i = 0; i < 33; i++) {
@@ -822,6 +952,7 @@ void setup() {
     // Set up existing server routes for STA mode
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ processRootRoute(request); });
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){ processApiStatusRoute(request); });
+    server.on("/api/mqtt/save", HTTP_POST, [](AsyncWebServerRequest *request){ processSaveMqttConfigRoute(request); });
     server.on("^\\/api\\/colourled\\/(state|brightness)\\/([0-9a-zA-Z]+)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processColourLEDControl(request, request->pathArg(0), request->pathArg(1)); });
     server.on("^\\/api\\/buzzer\\/(volume|test)\\/([0-9]+)?$", HTTP_POST,
@@ -913,6 +1044,12 @@ void loop() {
 
   // These should only run if WiFi is connected and system is in full operational STA mode
   if (WiFi.status() == WL_CONNECTED) {
+    if (strlen(mqttBroker) > 0) {
+        if (!mqttClient.connected()) {
+            reconnectMQTT();
+        }
+        mqttClient.loop();
+    }
     OTA.loop();
     processFujitsuComms();
     processLEDColourCycle();
