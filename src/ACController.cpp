@@ -14,14 +14,8 @@
 #include "melody_player/melody_player.h"
 #include "melody_player/melody_factory.h"
 
-#define MAX_MQTT_MESSAGES 10
-String lastMqttMessages[MAX_MQTT_MESSAGES];
-int mqttMessageIndex = 0;
-
-void addMqttMessage(const String& message) {
-    lastMqttMessages[mqttMessageIndex] = message;
-    mqttMessageIndex = (mqttMessageIndex + 1) % MAX_MQTT_MESSAGES;
-}
+unsigned long lastMqttConnectionAttempt = 0; // Track last MQTT connection attempt time
+const int mqttReconnectInterval = 5000; // 5 seconds between connection attempts
 
 // Preferences keys for eeprom config
 const char* PREF_KEY_SSID = "wifi_ssid";
@@ -46,7 +40,7 @@ char mqttBroker[64] = "";
 int mqttPort = 1883;
 char mqttUser[32] = "";
 char mqttPassword[64] = "";
-char mqttTopic[32] = "";
+char mqttBaseTopic[32] = "";
 
 const int apiPort = 80;
 
@@ -235,7 +229,7 @@ String buildMQTTControlHTML() {
     html += "<label for=\"mqtt_port\">MQTT Port:</label><input type=\"number\" id=\"mqtt_port\" name=\"mqtt_port\" value=\"" + String(mqttPort) + "\"><br>";
     html += "<label for=\"mqtt_user\">MQTT User:</label><input type=\"text\" id=\"mqtt_user\" name=\"mqtt_user\" value=\"" + String(mqttUser) + "\"><br>";
     html += "<label for=\"mqtt_pass\">MQTT Password:</label><input type=\"password\" id=\"mqtt_pass\" name=\"mqtt_pass\" value=\"" + String(mqttPassword) + "\"><br>";
-    html += "<label for=\"mqtt_topic\">MQTT Topic:</label><input type=\"text\" id=\"mqtt_topic\" name=\"mqtt_topic\" value=\"" + String(mqttTopic) + "\"><br>";
+    html += "<label for=\"mqtt_topic\">MQTT Topic:</label><input type=\"text\" id=\"mqtt_topic\" name=\"mqtt_topic\" value=\"" + String(mqttBaseTopic) + "\"><br>";
     html += "<input type=\"button\" value=\"Save MQTT Config\" onclick=\"saveMqttConfig()\">";
     html += "</div>";
     html += "<script>";
@@ -578,29 +572,20 @@ void notifyAudibleTone(uint8_t index = currentMelodyIndex) {
 
 void notifyWSSubscribers() {
   ws.textAll(buildCurrentStatePayload());
+}
 
-  JsonDocument doc;
-  doc["type"] = "mqtt_log";
-  for (int i = 0; i < MAX_MQTT_MESSAGES; i++) {
-    if (lastMqttMessages[i] != "") {
-        doc["message"] = lastMqttMessages[i];
-        String payload;
-        serializeJson(doc, payload);
-        ws.textAll(payload);
+void notifyMqttTopics() {
+    if (mqttClient.connected()) {
+        String payload = buildCurrentStatePayload();
+        mqttClient.publish((String(mqttBaseTopic) + String("/status")).c_str(), payload.c_str(), true);
+        Serial.println("Published message to " + String(mqttBaseTopic) + String("/status") + " with " + payload);
     }
-  }
 }
 
 void notifyObservers() {
     notifyWSSubscribers();
     notifyAudibleTone(4);
-
-    if (mqttClient.connected()) {
-        String payload = buildCurrentStatePayload();
-        mqttClient.publish((String(mqttTopic) + String("/status")).c_str(), payload.c_str(), true);
-        Serial.println("Published message to " + String(mqttTopic) + String("/status") + " with " + payload);
-        addMqttMessage("Published to " + String(mqttTopic) + String("/status") + ": " + payload);
-    }
+    notifyMqttTopics();
 }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -850,31 +835,39 @@ void startAPMode() {
 // --- End WiFi Configuration and AP Mode Functions ---
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    String message;
+    String payloadBuffer;
     for (unsigned int i = 0; i < length; i++) {
-        message += (char)payload[i];
+        payloadBuffer += (char)payload[i];
     }
     String topicStr(topic);
-    addMqttMessage("Processing event on topic '" + topicStr + "' with payload: " + message);
-    Serial.println("Processing event on topic '" + topicStr + "' with payload: " + message);
+    Serial.println("Processing event on topic '" + topicStr + "' with payload: " + payloadBuffer);
 
-    if (topicStr == String(mqttTopic) + String("/status")) return; // Ignore our own updates to the world
+    // For debug puposes share processing mqtt message with ws observers
+    JsonDocument docWS;
+    docWS["type"] = "mqtt_log";
+    docWS["message"] = String("Processing event on topic '") + String(topicStr) + String("' with payload: ") + String(payloadBuffer);
+    String json;
+    serializeJson(docWS, json);
+    ws.textAll(json);
+    // End debug mqtt
+
+    if (topicStr == String(mqttBaseTopic) + String("/status")) return; // Ignore our own updates to the world
 
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, message);
+    DeserializationError error = deserializeJson(doc, payloadBuffer);
     if (error) {
       Serial.print(F("Deserialisation of payload failed: "));
       Serial.println(error.c_str());
       return;
     }
 
-    if (topicStr == String(mqttTopic) + String("/ac/set")) {
+    if (topicStr == String(mqttBaseTopic) + String("/ac/set")) {
         String setting = doc["setting"];
         String value = doc["value"];
         processACControl(nullptr, setting, value);
     }
 
-    if (topicStr == String(mqttTopic) + String("/pin/set")) {
+    if (topicStr == String(mqttBaseTopic) + String("/pin/set")) {
         String pin = doc["pin"];
         String value = doc["value"];
         processOutputPinControl(nullptr, pin, value);
@@ -882,17 +875,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 void reconnectMQTT() {
-    if (!mqttClient.connected()) {
+    // Only attempt to reconnect if not connected and enough time has passed since last attempt
+    unsigned long currentMillis = millis();
+    if (!mqttClient.connected() && (currentMillis - lastMqttConnectionAttempt >= mqttReconnectInterval)) {
+        lastMqttConnectionAttempt = currentMillis; // Update the last attempt time
+
         Serial.print("Attempting MQTT connection...");
         String clientId = "ACController" + WiFi.localIP().toString();
+        String topic = String(mqttBaseTopic) + String("/#");
         if (mqttClient.connect(clientId.c_str(), mqttUser, mqttPassword)) {
-            Serial.println("connected");
-            mqttClient.subscribe((String(mqttTopic) + String("/#")).c_str());
+            Serial.print("connected.. ");
+            mqttClient.subscribe(topic.c_str());
+            Serial.println("and subscribed to " + topic);
         } else {
             Serial.print("failed, rc=");
             Serial.print(mqttClient.state());
-            Serial.println(" try again in 5 seconds");
-            delay(5000);
+            Serial.println(" will try again in " + String(mqttReconnectInterval) + " milliseconds");
         }
     }
 }
@@ -915,7 +913,7 @@ void setup() {
     mqttPort = preferences.getInt(PREF_KEY_MQTT_PORT, 1883);
     preferences.getString(PREF_KEY_MQTT_USER, mqttUser, sizeof(mqttUser));
     preferences.getString(PREF_KEY_MQTT_PASS, mqttPassword, sizeof(mqttPassword));
-    preferences.getString(PREF_KEY_MQTT_TOPIC, mqttTopic, sizeof(mqttTopic));
+    preferences.getString(PREF_KEY_MQTT_TOPIC, mqttBaseTopic, sizeof(mqttBaseTopic));
     preferences.end();
 
     if (strlen(mqttBroker) > 0) {
@@ -1045,10 +1043,10 @@ void loop() {
   // These should only run if WiFi is connected and system is in full operational STA mode
   if (WiFi.status() == WL_CONNECTED) {
     if (strlen(mqttBroker) > 0) {
-        if (!mqttClient.connected()) {
-            reconnectMQTT();
+        reconnectMQTT();
+        if (mqttClient.connected()) {
+            mqttClient.loop();
         }
-        mqttClient.loop();
     }
     OTA.loop();
     processFujitsuComms();
