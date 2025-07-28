@@ -1,3 +1,5 @@
+const char* CONTROLLER_VERSION = "1.2";
+
 #include <Arduino.h>
 #define ARRAY_SIZE(arr)   (sizeof(arr) / sizeof((arr)[0]))
 
@@ -403,7 +405,7 @@ String buildHtmlPage() {
   html += "  reloadCurrentStateAsync().then(() => connectWebSocket());";
   html += "});";
   html += "</script></head>";
-  html += "<body><h1>Fujitsu AC & Zone Controller</h1><h3>v1.1.1</h3>";
+  html += String("<body><h1>Fujitsu AC & Zone Controller</h1><h3>") + CONTROLLER_VERSION + String("</h3>");
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
   html += "<h3>MQTT Configuration</h3><div>" + buildMQTTControlHTML() + "</div>";
@@ -425,6 +427,7 @@ void processRootRoute(AsyncWebServerRequest *request) {
 
 String buildCurrentStatePayload() {
   JsonDocument doc;
+  doc["version"] = CONTROLLER_VERSION;
   doc["ac"]["power"] = fujitsu.getOnOff();
   doc["ac"]["mode"] = ACModeToString(static_cast<ACMode>(fujitsu.getMode()));
   doc["ac"]["fanMode"] = ACFanModeToString(static_cast<ACFanMode>(fujitsu.getFanMode()));
@@ -570,29 +573,28 @@ void notifyAudibleTone(uint8_t index = currentMelodyIndex) {
   Serial.println("Melody is playing!");
 }
 
-void notifyWSSubscribers() {
-  ws.textAll(buildCurrentStatePayload());
+void notifyWSSubscribers(String message = buildCurrentStatePayload()) {
+  ws.textAll(message);
 }
 
-void notifyMqttTopics() {
+void notifyMqttTopics(String message = buildCurrentStatePayload()) {
     if (mqttClient.connected()) {
-        String payload = buildCurrentStatePayload();
-        mqttClient.publish((String(mqttBaseTopic) + String("/status")).c_str(), payload.c_str(), true);
-        Serial.println("Published message to " + String(mqttBaseTopic) + String("/status") + " with " + payload);
+        mqttClient.publish((String(mqttBaseTopic) + String("/status")).c_str(), message.c_str(), true);
+        Serial.println("Published message to " + String(mqttBaseTopic) + String("/status") + " with " + message);
     }
 }
 
 void notifyObservers() {
-    notifyWSSubscribers();
+    String message = buildCurrentStatePayload();
+    notifyWSSubscribers(message);
     notifyAudibleTone(4);
-    notifyMqttTopics();
+    notifyMqttTopics(message);
 }
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   switch (type) {
     case WS_EVT_CONNECT:
       Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-      // notifyObservers(); // Not sure if there is value in notifying all clients when a new client connects
       break;
     case WS_EVT_DISCONNECT: Serial.printf("WebSocket client #%u disconnected\n", client->id()); break;
     case WS_EVT_DATA: Serial.printf("WebSocket client #%u sent data: %s\n", client->id(), (char*)data); break;
