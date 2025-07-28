@@ -28,6 +28,12 @@ const char* PREF_KEY_MQTT_USER = "mqtt_user";
 const char* PREF_KEY_MQTT_PASS = "mqtt_pass";
 const char* PREF_KEY_MQTT_TOPIC = "mqtt_topic";
 
+// Preferences keys for pin configuration
+const char* PREF_KEY_AC_RX_PIN = "ac_rx_pin";
+const char* PREF_KEY_AC_TX_PIN = "ac_tx_pin";
+const char* PREF_KEY_OUTPUT_PINS = "output_pins";
+const char* PREF_KEY_INPUT_PINS = "input_pins";
+
 // AP Mode settings for WiFi configuration
 const char* AP_CONFIG_SSID = "Baums AC Controller"; // Unique name for config AP
 const char* AP_CONFIG_PASSWORD = NULL;              // No password for config AP
@@ -62,14 +68,21 @@ AsyncWebSocket ws("/ws");
 bool colourLEDState = true;
 uint8_t colourLEDBrightness = 30;
 
-const uint8_t acRxPin = 25;
-const uint8_t acTxPin = 32;
+// Default pin configurations that can be overridden by preferences
+uint8_t acRxPin = 25;
+uint8_t acTxPin = 32;
 
-const uint8_t outputPins[] = { 2, 19, 21, 22, 23 };
-bool outputStates[ARRAY_SIZE(outputPins)] = {};
+// Maximum number of pins we'll support
+#define MAX_OUTPUT_PINS 8
+#define MAX_INPUT_PINS 8
 
-const uint8_t inputPins[] = { 14, 26, 27, 33 };
-bool inputStates[ARRAY_SIZE(inputPins)] = {};
+uint8_t outputPins[MAX_OUTPUT_PINS] = { 2, 19, 21, 22, 23, 0, 0, 0 };
+uint8_t outputPinCount = 5; // Default number of output pins
+bool outputStates[MAX_OUTPUT_PINS] = {};
+
+uint8_t inputPins[MAX_INPUT_PINS] = { 14, 26, 27, 33, 0, 0, 0, 0 };
+uint8_t inputPinCount = 4; // Default number of input pins
+bool inputStates[MAX_INPUT_PINS] = {};
 
 const uint8_t STATUS_LED_PIN = outputPins[0];
 
@@ -253,7 +266,7 @@ String buildMQTTControlHTML() {
 
 String buildOutputPinsHTML() {
   String buttons = "";
-  for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
+  for (int i = 0; i < outputPinCount; i++) {
     String pinState = outputStates[i] ? "ON" : "OFF";
     String buttonClass = outputStates[i] ? "button" : "button button-off";
     buttons += "<div><a id=\"outPin" + String(outputPins[i]) + "\" data-state=\"" + String(outputStates[i] ? "1" : "0");
@@ -267,13 +280,89 @@ String buildOutputPinsHTML() {
 
 String buildInputPinsHTML() {
   String buttons = "";
-  for (int i = 0; i < ARRAY_SIZE(inputPins); i++) {
+  for (int i = 0; i < inputPinCount; i++) {
     bool state = digitalRead(inputPins[i]) == HIGH;
     String buttonClass = state ? "button" : "button button-off";
     buttons += "<div><a id=\"inPin" + String(inputPins[i]) + "\" href=\"javascript:void(0)\" class=\"" + buttonClass + "\">Pin " +
       String(inputPins[i]) + ": " + (state ? "ON" : "OFF") + "</a></div>";
   }
   return buttons;
+}
+
+String buildPinConfigHTML() {
+  String html = "<div>";
+
+  // AC RX/TX Pins
+  html += "<h4>AC Communication Pins</h4>";
+  html += "<label for=\"ac_rx_pin\">AC RX Pin:</label><input type=\"number\" id=\"ac_rx_pin\" name=\"ac_rx_pin\" value=\"" + String(acRxPin) + "\"><br>";
+  html += "<label for=\"ac_tx_pin\">AC TX Pin:</label><input type=\"number\" id=\"ac_tx_pin\" name=\"ac_tx_pin\" value=\"" + String(acTxPin) + "\"><br>";
+
+  // Output Pins
+  html += "<h4>Output Pins</h4>";
+  html += "<div id=\"output_pins_container\">";
+  for (int i = 0; i < MAX_OUTPUT_PINS; i++) {
+    String pinValue = (i < outputPinCount) ? String(outputPins[i]) : "";
+    html += "<div class=\"pin-input\">";
+    html += "<label for=\"output_pin_" + String(i) + "\">Output Pin " + String(i+1) + ":</label>";
+    html += "<input type=\"number\" id=\"output_pin_" + String(i) + "\" name=\"output_pin_" + String(i) + "\" value=\"" + pinValue + "\">";
+    html += "</div>";
+  }
+  html += "</div>";
+
+  // Input Pins
+  html += "<h4>Input Pins</h4>";
+  html += "<div id=\"input_pins_container\">";
+  for (int i = 0; i < MAX_INPUT_PINS; i++) {
+    String pinValue = (i < inputPinCount) ? String(inputPins[i]) : "";
+    html += "<div class=\"pin-input\">";
+    html += "<label for=\"input_pin_" + String(i) + "\">Input Pin " + String(i+1) + ":</label>";
+    html += "<input type=\"number\" id=\"input_pin_" + String(i) + "\" name=\"input_pin_" + String(i) + "\" value=\"" + pinValue + "\">";
+    html += "</div>";
+  }
+  html += "</div>";
+
+  html += "<br><input type=\"button\" value=\"Save Pin Configuration\" onclick=\"savePinConfig()\">";
+  html += "</div>";
+
+  html += "<script>";
+  html += "function savePinConfig() {";
+  html += "  const acRxPin = document.getElementById('ac_rx_pin').value;";
+  html += "  const acTxPin = document.getElementById('ac_tx_pin').value;";
+
+  html += "  let outputPins = [];";
+  html += "  for (let i = 0; i < " + String(MAX_OUTPUT_PINS) + "; i++) {";
+  html += "    const pinValue = document.getElementById('output_pin_' + i).value;";
+  html += "    if (pinValue && pinValue.trim() !== '') {";
+  html += "      outputPins.push(parseInt(pinValue));";
+  html += "    }";
+  html += "  }";
+
+  html += "  let inputPins = [];";
+  html += "  for (let i = 0; i < " + String(MAX_INPUT_PINS) + "; i++) {";
+  html += "    const pinValue = document.getElementById('input_pin_' + i).value;";
+  html += "    if (pinValue && pinValue.trim() !== '') {";
+  html += "      inputPins.push(parseInt(pinValue));";
+  html += "    }";
+  html += "  }";
+
+  html += "  const url = `/api/pins/save`;";
+  html += "  fetch(url, {";
+  html += "    method: 'POST',";
+  html += "    headers: { 'Content-Type': 'application/json' },";
+  html += "    body: JSON.stringify({";
+  html += "      acRxPin: parseInt(acRxPin),";
+  html += "      acTxPin: parseInt(acTxPin),";
+  html += "      outputPins: outputPins,";
+  html += "      inputPins: inputPins";
+  html += "    })";
+  html += "  })";
+  html += "  .then(response => response.json())";
+  html += "  .then(data => { console.log('Pin Config Saved:', data); alert('Pin Configuration Saved. The device will now restart.'); })";
+  html += "  .catch(error => { console.error('Error saving pin config:', error); });";
+  html += "}";
+  html += "</script>";
+
+  return html;
 }
 
 String buildHtmlPage() {
@@ -409,6 +498,7 @@ String buildHtmlPage() {
   html += "<h3>Update Current State</h3><div class=\"button-container\"><input type=\"button\" value=\"Refresh\" onclick=\"reloadCurrentStateAsync();return false;\"></div>";
   html += "<h3>Fujitsu AC Controller Status</h3><div>" + buildACControlHTML() + "</div>";
   html += "<h3>MQTT Configuration</h3><div>" + buildMQTTControlHTML() + "</div>";
+  html += "<h3>Pin Configuration</h3><div>" + buildPinConfigHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
   html += "<h3>Buzzer Control</h3><div class=\"button-container\">" + buildBuzzerControlHTML() + "</div>";
   html += "<h3>Available GPIO Output Control Pins</h3><div class=\"button-container\">" + buildOutputPinsHTML() + "</div>";
@@ -433,13 +523,13 @@ String buildCurrentStatePayload() {
   doc["ac"]["fanMode"] = ACFanModeToString(static_cast<ACFanMode>(fujitsu.getFanMode()));
   doc["ac"]["temp"] = fujitsu.getTemp();
   JsonArray outputs = doc["outputs"].to<JsonArray>();
-  for (int i = 0; i < ARRAY_SIZE(outputPins); i++) {
+  for (int i = 0; i < outputPinCount; i++) {
     JsonObject output = outputs.add<JsonObject>();
     output["pin"] = String(outputPins[i]);
     output["state"] = outputStates[i];
   }
   JsonArray inputs = doc["inputs"].to<JsonArray>();
-  for (int i = 0; i < ARRAY_SIZE(inputPins); i++) {
+  for (int i = 0; i < inputPinCount; i++) {
     JsonObject input = inputs.add<JsonObject>();
     input["pin"] = String(inputPins[i]);
     input["state"] = inputStates[i];
@@ -469,6 +559,73 @@ void processSaveMqttConfigRoute(AsyncWebServerRequest *request) {
     request->send(200, "application/json", "{\"success\":true}");
     delay(1000);
     ESP.restart();
+}
+
+void processSavePinConfigRoute(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+    if (len + index == total) {
+        // Parse the JSON data
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, data, len);
+        if (error) {
+            request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+            return;
+        }
+
+        // Extract the pin configurations
+        uint8_t newAcRxPin = doc["acRxPin"];
+        uint8_t newAcTxPin = doc["acTxPin"];
+
+        // Extract output pins
+        JsonArray outputPinsArray = doc["outputPins"];
+        uint8_t newOutputPinCount = outputPinsArray.size();
+        if (newOutputPinCount > MAX_OUTPUT_PINS) {
+            newOutputPinCount = MAX_OUTPUT_PINS;
+        }
+
+        uint8_t newOutputPins[MAX_OUTPUT_PINS] = {0};
+        for (int i = 0; i < newOutputPinCount; i++) {
+            newOutputPins[i] = outputPinsArray[i];
+        }
+
+        // Extract input pins
+        JsonArray inputPinsArray = doc["inputPins"];
+        uint8_t newInputPinCount = inputPinsArray.size();
+        if (newInputPinCount > MAX_INPUT_PINS) {
+            newInputPinCount = MAX_INPUT_PINS;
+        }
+
+        uint8_t newInputPins[MAX_INPUT_PINS] = {0};
+        for (int i = 0; i < newInputPinCount; i++) {
+            newInputPins[i] = inputPinsArray[i];
+        }
+
+        // Save the pin configurations to preferences
+        preferences.begin("pin-config", false);
+        preferences.putUChar(PREF_KEY_AC_RX_PIN, newAcRxPin);
+        preferences.putUChar(PREF_KEY_AC_TX_PIN, newAcTxPin);
+
+        // Save output pins as a string of comma-separated values
+        String outputPinsStr = "";
+        for (int i = 0; i < newOutputPinCount; i++) {
+            if (i > 0) outputPinsStr += ",";
+            outputPinsStr += String(newOutputPins[i]);
+        }
+        preferences.putString(PREF_KEY_OUTPUT_PINS, outputPinsStr);
+
+        // Save input pins as a string of comma-separated values
+        String inputPinsStr = "";
+        for (int i = 0; i < newInputPinCount; i++) {
+            if (i > 0) inputPinsStr += ",";
+            inputPinsStr += String(newInputPins[i]);
+        }
+        preferences.putString(PREF_KEY_INPUT_PINS, inputPinsStr);
+
+        preferences.end();
+
+        request->send(200, "application/json", "{\"success\":true}");
+        delay(1000);
+        ESP.restart();
+    }
 }
 
 // Global variable to track which melody to play next
@@ -908,6 +1065,59 @@ void setup() {
     // --- STA Mode: WiFi Connected - Initialize full functionality ---
     Serial.println("STA Mode: Initializing full device functionality...");
 
+    // Load pin configurations from preferences
+    preferences.begin("pin-config", true);
+    acRxPin = preferences.getUChar(PREF_KEY_AC_RX_PIN, acRxPin);
+    acTxPin = preferences.getUChar(PREF_KEY_AC_TX_PIN, acTxPin);
+
+    // Load output pins
+    String outputPinsStr = preferences.getString(PREF_KEY_OUTPUT_PINS, "");
+    if (outputPinsStr.length() > 0) {
+      outputPinCount = 0;
+      int startPos = 0;
+      int commaPos = outputPinsStr.indexOf(',');
+      while (commaPos >= 0 && outputPinCount < MAX_OUTPUT_PINS) {
+        outputPins[outputPinCount++] = outputPinsStr.substring(startPos, commaPos).toInt();
+        startPos = commaPos + 1;
+        commaPos = outputPinsStr.indexOf(',', startPos);
+      }
+      // Add the last pin after the last comma (or the only pin if no commas)
+      if (startPos < outputPinsStr.length() && outputPinCount < MAX_OUTPUT_PINS) {
+        outputPins[outputPinCount++] = outputPinsStr.substring(startPos).toInt();
+      }
+    }
+
+    // Load input pins
+    String inputPinsStr = preferences.getString(PREF_KEY_INPUT_PINS, "");
+    if (inputPinsStr.length() > 0) {
+      inputPinCount = 0;
+      int startPos = 0;
+      int commaPos = inputPinsStr.indexOf(',');
+      while (commaPos >= 0 && inputPinCount < MAX_INPUT_PINS) {
+        inputPins[inputPinCount++] = inputPinsStr.substring(startPos, commaPos).toInt();
+        startPos = commaPos + 1;
+        commaPos = inputPinsStr.indexOf(',', startPos);
+      }
+      // Add the last pin after the last comma (or the only pin if no commas)
+      if (startPos < inputPinsStr.length() && inputPinCount < MAX_INPUT_PINS) {
+        inputPins[inputPinCount++] = inputPinsStr.substring(startPos).toInt();
+      }
+    }
+    preferences.end();
+
+    Serial.println("Loaded pin configuration:");
+    Serial.printf("AC RX Pin: %d, AC TX Pin: %d\n", acRxPin, acTxPin);
+    Serial.print("Output Pins: ");
+    for (int i = 0; i < outputPinCount; i++) {
+      Serial.printf("%d ", outputPins[i]);
+    }
+    Serial.println();
+    Serial.print("Input Pins: ");
+    for (int i = 0; i < inputPinCount; i++) {
+      Serial.printf("%d ", inputPins[i]);
+    }
+    Serial.println();
+
     fujitsu.connect(&Serial2, true, acRxPin, acTxPin);
 
     preferences.begin("mqtt-config", true);
@@ -961,6 +1171,12 @@ void setup() {
       [](AsyncWebServerRequest *request) { processOutputPinControl(request, request->pathArg(0), request->pathArg(1)); });
     server.on("^\\/api\\/ac\\/(temp|mode|fan|power)\\/([0-9]+|dry|cool|heat|auto|quiet|low|medium|high|on|off|0|1)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processACControl(request, request->pathArg(0), request->pathArg(1)); });
+    server.on("/api/pins/save", HTTP_POST,
+      [](AsyncWebServerRequest *request) { request->send(400, "application/json", "{\"success\":false,\"error\":\"No data provided\"}"); },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+        processSavePinConfigRoute(request, data, len, index, total);
+      });
     server.onNotFound([](AsyncWebServerRequest *request){ process404(request); });
 
     ws.onEvent(onWsEvent);
@@ -1023,7 +1239,7 @@ void processPinStateChanges() {
   if (millis() - pinStateCheckLastMillis >= pinStateCheckInterval) {
     pinStateCheckLastMillis = millis();
     bool changed = false;
-    for (int i = 0; i < ARRAY_SIZE(inputPins); i++) {
+    for (int i = 0; i < inputPinCount; i++) {
       bool currentState = digitalRead(inputPins[i]) == HIGH;
       if (currentState != inputStates[i]) {
         inputStates[i] = currentState;
