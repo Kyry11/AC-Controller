@@ -33,6 +33,7 @@ const char* PREF_KEY_AC_RX_PIN = "ac_rx_pin";
 const char* PREF_KEY_AC_TX_PIN = "ac_tx_pin";
 const char* PREF_KEY_OUTPUT_PINS = "output_pins";
 const char* PREF_KEY_INPUT_PINS = "input_pins";
+const char* PREF_KEY_ZONES = "zones";
 
 // AP Mode settings for WiFi configuration
 const char* AP_CONFIG_SSID = "Baums AC Controller"; // Unique name for config AP
@@ -75,6 +76,14 @@ uint8_t acTxPin = 32;
 // Maximum number of pins we'll support
 #define MAX_OUTPUT_PINS 8
 #define MAX_INPUT_PINS 8
+#define MAX_ZONES 8
+
+// Zone structure to map input and output pins
+struct Zone {
+  String id;
+  uint8_t inputPin;
+  uint8_t outputPin;
+};
 
 uint8_t outputPins[MAX_OUTPUT_PINS] = { 2, 19, 21, 22, 23, 0, 0, 0 };
 uint8_t outputPinCount = 5; // Default number of output pins
@@ -83,6 +92,10 @@ bool outputStates[MAX_OUTPUT_PINS] = {};
 uint8_t inputPins[MAX_INPUT_PINS] = { 14, 26, 27, 33, 0, 0, 0, 0 };
 uint8_t inputPinCount = 4; // Default number of input pins
 bool inputStates[MAX_INPUT_PINS] = {};
+
+// Zone configuration
+Zone zones[MAX_ZONES] = {};
+uint8_t zoneCount = 0;
 
 const uint8_t STATUS_LED_PIN = outputPins[0];
 
@@ -184,6 +197,43 @@ int findOutputIndexByPin(uint8_t pin) {
   return -1;
 }
 
+int findInputIndexByPin(uint8_t pin) {
+  for (int i = 0; i < ARRAY_SIZE(inputPins); i++) {
+    if (pin == inputPins[i]) return i;
+  }
+  return -1;
+}
+
+int findZoneById(String id) {
+  for (int i = 0; i < zoneCount; i++) {
+    if (zones[i].id == id) return i;
+  }
+  return -1;
+}
+
+int findZoneByInputPin(uint8_t pin) {
+  for (int i = 0; i < zoneCount; i++) {
+    if (zones[i].inputPin == pin) return i;
+  }
+  return -1;
+}
+
+int findZoneByOutputPin(uint8_t pin) {
+  for (int i = 0; i < zoneCount; i++) {
+    if (zones[i].outputPin == pin) return i;
+  }
+  return -1;
+}
+
+bool getZoneState(int zoneIndex) {
+  if (zoneIndex < 0 || zoneIndex >= zoneCount) return false;
+
+  int inputIndex = findInputIndexByPin(zones[zoneIndex].inputPin);
+  if (inputIndex == -1) return false;
+
+  return inputStates[inputIndex];
+}
+
 void simulateButtonPressWithNegation(uint8_t pin, int delayMs) {
   int idx = findOutputIndexByPin(pin);
   if (idx == -1) return;
@@ -191,6 +241,12 @@ void simulateButtonPressWithNegation(uint8_t pin, int delayMs) {
   digitalWrite(pin, level ? LOW : HIGH);
   delay(delayMs);
   digitalWrite(pin, level ? HIGH : LOW);
+}
+
+void toggleZone(int zoneIndex) {
+  if (zoneIndex < 0 || zoneIndex >= zoneCount) return;
+
+  simulateButtonPressWithNegation(zones[zoneIndex].outputPin, 350);
 }
 
 String buildACControlHTML() {
@@ -287,6 +343,70 @@ String buildInputPinsHTML() {
       String(inputPins[i]) + ": " + (state ? "ON" : "OFF") + "</a></div>";
   }
   return buttons;
+}
+
+String buildZoneControlHTML() {
+  String buttons = "";
+  for (int i = 0; i < zoneCount; i++) {
+    bool state = getZoneState(i);
+    String buttonClass = state ? "button" : "button button-off";
+    buttons += "<div><a id=\"zone" + zones[i].id + "\" data-id=\"" + zones[i].id + "\" data-state=\"" + String(state ? "1" : "0");
+    buttons += "\" href=\"javascript:void(0)\" onclick=\"submitApiRequest('/api/zone/" + zones[i].id + "/toggle'); return false;\" class=\"";
+    buttons += buttonClass + "\">Zone " + zones[i].id + ": " + (state ? "ON" : "OFF") + "</a></div>";
+  }
+  return buttons;
+}
+
+String buildZoneConfigHTML() {
+  String html = "<div>";
+  html += "<h4>Zone Configuration</h4>";
+  html += "<div id=\"zones_container\">";
+  for (int i = 0; i < MAX_ZONES; i++) {
+    String zoneId = (i < zoneCount) ? zones[i].id : "";
+    String inputPin = (i < zoneCount) ? String(zones[i].inputPin) : "";
+    String outputPin = (i < zoneCount) ? String(zones[i].outputPin) : "";
+
+    html += "<div class=\"zone-input\">";
+    html += "<label for=\"zone_id_" + String(i) + "\">Zone " + String(i+1) + " ID:</label>";
+    html += "<input type=\"text\" id=\"zone_id_" + String(i) + "\" name=\"zone_id_" + String(i) + "\" value=\"" + zoneId + "\">";
+    html += "<label for=\"zone_input_pin_" + String(i) + "\">Input Pin:</label>";
+    html += "<input type=\"number\" id=\"zone_input_pin_" + String(i) + "\" name=\"zone_input_pin_" + String(i) + "\" value=\"" + inputPin + "\">";
+    html += "<label for=\"zone_output_pin_" + String(i) + "\">Output Pin:</label>";
+    html += "<input type=\"number\" id=\"zone_output_pin_" + String(i) + "\" name=\"zone_output_pin_" + String(i) + "\" value=\"" + outputPin + "\">";
+    html += "</div>";
+  }
+  html += "</div>";
+  html += "<br><input type=\"button\" value=\"Save Zone Configuration\" onclick=\"saveZoneConfig()\">";
+  html += "</div>";
+
+  html += "<script>";
+  html += "function saveZoneConfig() {";
+  html += "  let zones = [];";
+  html += "  for (let i = 0; i < " + String(MAX_ZONES) + "; i++) {";
+  html += "    const zoneId = document.getElementById('zone_id_' + i).value;";
+  html += "    const inputPin = document.getElementById('zone_input_pin_' + i).value;";
+  html += "    const outputPin = document.getElementById('zone_output_pin_' + i).value;";
+  html += "    if (zoneId && zoneId.trim() !== '' && inputPin && inputPin.trim() !== '' && outputPin && outputPin.trim() !== '') {";
+  html += "      zones.push({";
+  html += "        id: zoneId,";
+  html += "        inputPin: parseInt(inputPin),";
+  html += "        outputPin: parseInt(outputPin)";
+  html += "      });";
+  html += "    }";
+  html += "  }";
+  html += "  const url = `/api/zones/save`;";
+  html += "  fetch(url, {";
+  html += "    method: 'POST',";
+  html += "    headers: { 'Content-Type': 'application/json' },";
+  html += "    body: JSON.stringify({ zones: zones })";
+  html += "  })";
+  html += "  .then(response => response.json())";
+  html += "  .then(data => { console.log('Zone Config Saved:', data); alert('Zone Configuration Saved. The device will now restart.'); })";
+  html += "  .catch(error => { console.error('Error saving zone config:', error); });";
+  html += "}";
+  html += "</script>";
+
+  return html;
 }
 
 String buildPinConfigHTML() {
@@ -489,6 +609,17 @@ String buildHtmlPage() {
   html += "      }";
   html += "    }";
   html += "  }";
+  html += "  if (state.zones) {";
+  html += "    for (var i = 0; i < state.zones.length; i++) {";
+  html += "      const zoneElement = document.getElementById('zone' + state.zones[i].id);";
+  html += "      if (zoneElement) {";
+  html += "        zoneElement.dataset.state = state.zones[i].state ? '1' : '0';";
+  html += "        zoneElement.innerText = 'Zone ' + state.zones[i].id + ': ' + (state.zones[i].state ? 'ON' : 'OFF');";
+  html += "        if (state.zones[i].state) { zoneElement.classList.remove('button-off'); }";
+  html += "        else { zoneElement.classList.add('button-off'); }";
+  html += "      }";
+  html += "    }";
+  html += "  }";
   html += "}";
   html += "document.addEventListener('DOMContentLoaded', function() {";
   html += "  reloadCurrentStateAsync().then(() => connectWebSocket());";
@@ -501,6 +632,8 @@ String buildHtmlPage() {
   html += "<h3>Pin Configuration</h3><div>" + buildPinConfigHTML() + "</div>";
   html += "<h3>Colour Cycling LED Control</h3><div class=\"button-container\">" + buildColourLEDControlHTML() + "</div>";
   html += "<h3>Buzzer Control</h3><div class=\"button-container\">" + buildBuzzerControlHTML() + "</div>";
+  html += "<h3>Zone Configuration</h3><div>" + buildZoneConfigHTML() + "</div>";
+  html += "<h3>Zone Control</h3><div class=\"button-container\">" + buildZoneControlHTML() + "</div>";
   html += "<h3>Available GPIO Output Control Pins</h3><div class=\"button-container\">" + buildOutputPinsHTML() + "</div>";
   html += "<h3>Available Input Control Pins</h3><div class=\"button-container\">" + buildInputPinsHTML() + "</div>";
   html += "<h3><a href=\"/update\">Upload new firmware</a></h3>";
@@ -534,6 +667,14 @@ String buildCurrentStatePayload() {
     input["pin"] = String(inputPins[i]);
     input["state"] = inputStates[i];
   }
+  JsonArray zonesArray = doc["zones"].to<JsonArray>();
+  for (int i = 0; i < zoneCount; i++) {
+    JsonObject zone = zonesArray.add<JsonObject>();
+    zone["id"] = zones[i].id;
+    zone["inputPin"] = zones[i].inputPin;
+    zone["outputPin"] = zones[i].outputPin;
+    zone["state"] = getZoneState(i);
+  }
   JsonObject colourled = doc["colourled"].to<JsonObject>();
   colourled["state"] = colourLEDState;
   colourled["brightness"] = colourLEDBrightness; // Already uint8_t, no need for String()
@@ -559,6 +700,58 @@ void processSaveMqttConfigRoute(AsyncWebServerRequest *request) {
     request->send(200, "application/json", "{\"success\":true}");
     delay(1000);
     ESP.restart();
+}
+
+void processSaveZoneConfigRoute(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+    if (len + index == total) {
+        // Parse the JSON data
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, data, len);
+        if (error) {
+            request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+            return;
+        }
+
+        // Extract the zone configurations
+        JsonArray zonesArray = doc["zones"];
+        uint8_t newZoneCount = zonesArray.size();
+        if (newZoneCount > MAX_ZONES) {
+            newZoneCount = MAX_ZONES;
+        }
+
+        Zone newZones[MAX_ZONES];
+        for (int i = 0; i < newZoneCount; i++) {
+            newZones[i].id = zonesArray[i]["id"].as<String>();
+            newZones[i].inputPin = zonesArray[i]["inputPin"];
+            newZones[i].outputPin = zonesArray[i]["outputPin"];
+        }
+
+        // Save the zone configurations to preferences
+        preferences.begin("zone-config", false);
+
+        // Save zones as a JSON string
+        JsonDocument zonesDoc;
+        JsonArray zonesJsonArray = zonesDoc.to<JsonArray>();
+        for (int i = 0; i < newZoneCount; i++) {
+            JsonObject zoneObj = zonesJsonArray.add<JsonObject>();
+            zoneObj["id"] = newZones[i].id;
+            zoneObj["inputPin"] = newZones[i].inputPin;
+            zoneObj["outputPin"] = newZones[i].outputPin;
+        }
+
+        String zonesStr;
+        serializeJson(zonesDoc, zonesStr);
+        preferences.putString(PREF_KEY_ZONES, zonesStr);
+        preferences.end();
+
+        // Update the current zones
+        zoneCount = newZoneCount;
+        for (int i = 0; i < zoneCount; i++) {
+            zones[i] = newZones[i];
+        }
+
+        request->send(200, "application/json", "{\"success\":true}");
+    }
 }
 
 void processSavePinConfigRoute(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
@@ -801,6 +994,41 @@ void processBuzzerControl(AsyncWebServerRequest *request, String setting, String
   if (changed) notifyObservers();
 }
 
+void processZoneControl(AsyncWebServerRequest *request, String zoneId, String action) {
+  int zoneIndex = findZoneById(zoneId);
+  bool changed = false;
+
+  if (zoneIndex == -1) {
+    if (request) request->send(404, "application/json", "{\"success\":false,\"error\":\"Zone not found\"}");
+    return;
+  }
+
+  if (action == "toggle") {
+    toggleZone(zoneIndex);
+    changed = true;
+    if (request) request->send(200, "application/json", "{\"success\":true,\"action\":\"toggle\",\"zone\":\"" + zoneId + "\"}");
+  } else if (action == "on" || action == "1") {
+    bool currentState = getZoneState(zoneIndex);
+    if (!currentState) {
+      toggleZone(zoneIndex);
+      changed = true;
+    }
+    if (request) request->send(200, "application/json", "{\"success\":true,\"action\":\"on\",\"zone\":\"" + zoneId + "\"}");
+  } else if (action == "off" || action == "0") {
+    bool currentState = getZoneState(zoneIndex);
+    if (currentState) {
+      toggleZone(zoneIndex);
+      changed = true;
+    }
+    if (request) request->send(200, "application/json", "{\"success\":true,\"action\":\"off\",\"zone\":\"" + zoneId + "\"}");
+  } else {
+    if (request) request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown action\"}");
+    return;
+  }
+
+  if (changed) notifyObservers();
+}
+
 void processOutputPinControl(AsyncWebServerRequest *request, String pinStr, String valueStr) {
   int pin = pinStr.toInt();
   bool changed = false;
@@ -1031,6 +1259,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         String value = doc["value"];
         processOutputPinControl(nullptr, pin, value);
     }
+
+    if (topicStr == String(mqttBaseTopic) + String("/zone/set")) {
+        String zoneId = doc["id"];
+        String action = doc["action"];
+        processZoneControl(nullptr, zoneId, action);
+    }
 }
 
 void reconnectMQTT() {
@@ -1101,6 +1335,27 @@ void setup() {
       // Add the last pin after the last comma (or the only pin if no commas)
       if (startPos < inputPinsStr.length() && inputPinCount < MAX_INPUT_PINS) {
         inputPins[inputPinCount++] = inputPinsStr.substring(startPos).toInt();
+      }
+    }
+    preferences.end();
+
+    // Load zone configurations
+    preferences.begin("zone-config", true);
+    String zonesStr = preferences.getString(PREF_KEY_ZONES, "");
+    if (zonesStr.length() > 0) {
+      JsonDocument zonesDoc;
+      DeserializationError error = deserializeJson(zonesDoc, zonesStr);
+      if (!error) {
+        JsonArray zonesArray = zonesDoc.as<JsonArray>();
+        zoneCount = min((size_t)MAX_ZONES, zonesArray.size());
+        for (int i = 0; i < zoneCount; i++) {
+          zones[i].id = zonesArray[i]["id"].as<String>();
+          zones[i].inputPin = zonesArray[i]["inputPin"];
+          zones[i].outputPin = zonesArray[i]["outputPin"];
+        }
+        Serial.printf("Loaded %d zones from preferences\n", zoneCount);
+      } else {
+        Serial.println("Error parsing zones JSON from preferences");
       }
     }
     preferences.end();
@@ -1177,6 +1432,14 @@ void setup() {
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
         processSavePinConfigRoute(request, data, len, index, total);
       });
+    server.on("/api/zones/save", HTTP_POST,
+      [](AsyncWebServerRequest *request) { request->send(400, "application/json", "{\"success\":false,\"error\":\"No data provided\"}"); },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+        processSaveZoneConfigRoute(request, data, len, index, total);
+      });
+    server.on("^\\/api\\/zone\\/([^/]+)\\/(toggle|on|off|0|1)$", HTTP_POST,
+      [](AsyncWebServerRequest *request) { processZoneControl(request, request->pathArg(0), request->pathArg(1)); });
     server.onNotFound([](AsyncWebServerRequest *request){ process404(request); });
 
     ws.onEvent(onWsEvent);
