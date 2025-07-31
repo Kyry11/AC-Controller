@@ -1,4 +1,4 @@
-const char* CONTROLLER_VERSION = "1.2";
+const char* CONTROLLER_VERSION = "1.3";
 
 #include <Arduino.h>
 #define ARRAY_SIZE(arr)   (sizeof(arr) / sizeof((arr)[0]))
@@ -72,6 +72,10 @@ uint8_t colourLEDBrightness = 30;
 // Default pin configurations that can be overridden by preferences
 uint8_t acRxPin = 25;
 uint8_t acTxPin = 32;
+
+// Store previous AC state to detect changes
+ControlFrame previousACState;
+bool acStateInitialized = false;
 
 // Maximum number of pins we'll support
 #define MAX_OUTPUT_PINS 8
@@ -1460,8 +1464,41 @@ void setup() {
 }
 
 void processFujitsuComms() {
-  if(fujitsu.waitForFrame()) {
+  bool frameReceived = fujitsu.waitForFrame();
+
+  if(frameReceived) {
     fujitsuLastConnected = millis();
+
+    // Check if AC settings have changed
+    ControlFrame *currentState = fujitsu.getCurrentState();
+
+    if (!acStateInitialized) {
+      acStateInitialized = true;
+    } else {
+      // Compare current state with previous state
+      bool settingsChanged = false;
+
+      if (previousACState.onOff != currentState->onOff ||
+          previousACState.temperature != currentState->temperature ||
+          previousACState.acMode != currentState->acMode ||
+          previousACState.fanMode != currentState->fanMode ||
+          previousACState.economyMode != currentState->economyMode ||
+          previousACState.swingMode != currentState->swingMode ||
+          previousACState.swingStep != currentState->swingStep) {
+
+        settingsChanged = true;
+      }
+
+      // If settings changed, notify observers
+      if (settingsChanged) {
+        Serial.println("AC settings changed, notifying observers");
+        notifyObservers();
+      }
+    }
+
+    // Update previous state for next comparison
+    memcpy(&previousACState, currentState, sizeof(ControlFrame));
+
     delay(60);
     fujitsu.sendPendingFrame();
   }
@@ -1470,6 +1507,7 @@ void processFujitsuComms() {
     Serial.println("Fujitsu AC connection timed out, resetting connection...");
     fujitsu.resetConnection();
     fujitsuLastConnected = millis();
+    acStateInitialized = false; // Reset state initialization flag
   }
 }
 
