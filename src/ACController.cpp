@@ -12,9 +12,11 @@ const char* CONTROLLER_VERSION = "1.3";
 #include <FastLED.h>
 #include <Preferences.h>
 #include <DNSServer.h>
+#include <SPIFFS.h>
 
 #include "melody_player/melody_player.h"
 #include "melody_player/melody_factory.h"
+#include "StaticWebServer.h"
 
 unsigned long lastMqttConnectionAttempt = 0; // Track last MQTT connection attempt time
 const int mqttReconnectInterval = 5000; // 5 seconds between connection attempts
@@ -65,6 +67,7 @@ CRGB leds[LEDS_COUNT];
 FujitsuAC fujitsu;
 AsyncWebServer server(apiPort);
 AsyncWebSocket ws("/ws");
+StaticWebServer staticWebServer(&server);
 
 bool colourLEDState = true;
 uint8_t colourLEDBrightness = 30;
@@ -648,35 +651,73 @@ String buildHtmlPage() {
   return html;
 }
 
-void processRootRoute(AsyncWebServerRequest *request) {
-  request->send(200, "text/html", buildHtmlPage());
+String getStaticWebApp() {
+  // Check if SPIFFS is available and has the index.html file
+  if (SPIFFS.begin(true)) {
+    if (SPIFFS.exists("/index.html")) {
+      // Redirect to the static file instead of serving it directly
+      // This allows the browser to cache the file and load resources properly
+      return "<html><head><meta http-equiv=\"refresh\" content=\"0;url=/index.html\"></head><body>Redirecting...</body></html>";
+    }
+  }
+
+  // If SPIFFS is not available or index.html doesn't exist, use the error page
+  return "<html><head>AC Controller UI Is Not Available</head><body>And error occured while trying to serve AC Controller's UI using on chip file system.</body></html>";
 }
 
-String buildCurrentStatePayload() {
+void processRootRoute(AsyncWebServerRequest *request) {
+  request->send(200, "text/html", getStaticWebApp());
+}
+
+String buildCurrentStatePayload(bool includeConfigs = false) {
   JsonDocument doc;
+  JsonArray outputsConfig;
+  JsonArray inputsConfig;
+  JsonArray zonesConfig;
   doc["version"] = CONTROLLER_VERSION;
+  if (includeConfigs) {
+    doc["config"]["ac"]["rxPin"] = acRxPin;
+    doc["config"]["ac"]["txPin"] = acTxPin;
+    doc["config"]["mqtt"]["brokerUrl"] = mqttBroker;
+    doc["config"]["mqtt"]["brokerPort"] = mqttPort;
+    doc["config"]["mqtt"]["username"] = mqttUser;
+    doc["config"]["mqtt"]["password"] = mqttPassword;
+    doc["config"]["mqtt"]["baseTopic"] = mqttBaseTopic;
+    outputsConfig = doc["config"]["outputs"].to<JsonArray>();
+    inputsConfig = doc["config"]["inputs"].to<JsonArray>();
+    zonesConfig = doc["config"]["zones"].to<JsonArray>();
+  }
   doc["ac"]["power"] = fujitsu.getOnOff();
   doc["ac"]["mode"] = ACModeToString(static_cast<ACMode>(fujitsu.getMode()));
   doc["ac"]["fanMode"] = ACFanModeToString(static_cast<ACFanMode>(fujitsu.getFanMode()));
   doc["ac"]["temp"] = fujitsu.getTemp();
+
   JsonArray outputs = doc["outputs"].to<JsonArray>();
   for (int i = 0; i < outputPinCount; i++) {
+    if (includeConfigs) outputsConfig.add(String(outputPins[i]));
     JsonObject output = outputs.add<JsonObject>();
     output["pin"] = String(outputPins[i]);
     output["state"] = outputStates[i];
   }
+
   JsonArray inputs = doc["inputs"].to<JsonArray>();
   for (int i = 0; i < inputPinCount; i++) {
+    if (includeConfigs) inputsConfig.add(String(inputPins[i]));
     JsonObject input = inputs.add<JsonObject>();
     input["pin"] = String(inputPins[i]);
     input["state"] = inputStates[i];
   }
+
   JsonArray zonesArray = doc["zones"].to<JsonArray>();
   for (int i = 0; i < zoneCount; i++) {
+    if (includeConfigs) {
+      JsonObject zoneConfig = zonesConfig.add<JsonObject>();
+      zoneConfig["id"] = zones[i].id;
+      zoneConfig["inputPin"] = zones[i].inputPin;
+      zoneConfig["outputPin"] = zones[i].outputPin;
+    }
     JsonObject zone = zonesArray.add<JsonObject>();
     zone["id"] = zones[i].id;
-    zone["inputPin"] = zones[i].inputPin;
-    zone["outputPin"] = zones[i].outputPin;
     zone["state"] = getZoneState(i);
   }
   JsonObject colourled = doc["colourled"].to<JsonObject>();
@@ -690,7 +731,9 @@ String buildCurrentStatePayload() {
 }
 
 void processApiStatusRoute(AsyncWebServerRequest *request) {
-  request->send(200, "application/json", buildCurrentStatePayload());
+  bool includeConfig = false;
+  if (request->hasParam("includeConfig")) includeConfig = request->getParam("includeConfig")->value() == "true";
+  request->send(200, "application/json", buildCurrentStatePayload(includeConfig));
 }
 
 void processSaveMqttConfigRoute(AsyncWebServerRequest *request) {
@@ -1417,6 +1460,14 @@ void setup() {
     digitalWrite(STATUS_LED_PIN, LOW);
 
     notifyAudibleTone(13);
+
+    // Initialize SPIFFS and static web server
+    if (!staticWebServer.begin()) {
+      Serial.println("Failed to initialize static web server, falling back to dynamic HTML");
+    } else {
+      // List all files in SPIFFS for debugging
+      staticWebServer.listFiles();
+    }
 
     // Set up existing server routes for STA mode
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ processRootRoute(request); });

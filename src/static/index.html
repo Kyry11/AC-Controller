@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+    html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center; }
+    .button { background-color: yellow; border: none; color: grey; padding: 8px 8px;
+    text-decoration: none; font-size: 11px; margin: 2px; cursor: pointer; }
+    .button-off { background-color: #efefef; }
+    .button-container { display: inline-grid; grid-template-columns: auto auto auto; }
+  </style>
+  <script src="test.js"></script>
+  <script>
+
+    let deviceState = {};
+
+    async function getCurrentState(includeConfig = false) {
+      try {
+        const baseUrl = window.location.origin;
+        let apiUrl = baseUrl + "/api/status";
+        if (includeConfig) apiUrl += "?includeConfig=true";
+        const response = await fetch(apiUrl, { method: 'GET' });
+        return await response.json();
+      } catch (error) {
+        console.error('Error getting state:', error);
+        return null;
+      }
+    }
+
+    async function submitApiRequest(endpoint, method='POST') {
+      try {
+        const baseUrl = window.location.origin;
+        const url = baseUrl + endpoint;
+        const response = await fetch(url, { method: method });
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        console.error('Error:', error);
+        await reloadCurrentStateAsync();
+        return null;
+      }
+    }
+
+    async function reloadCurrentStateAsync() {
+      const state = await getCurrentState(true);
+      if (state) {
+        deviceState = state;
+        updateUIFromState(state);
+      }
+    }
+
+    let socket;
+    function connectWebSocket() {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(wsProtocol + '//' + window.location.host + '/ws');
+
+      socket.onopen = function(event) {
+        console.log('WebSocket connected');
+      };
+
+      socket.onmessage = function(event) {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'log') {
+            console.log('Processing received ws log:', data);
+            const logContainer = document.getElementById('log-container');
+            const logEntry = document.createElement('div');
+            logEntry.textContent = data.message;
+            logContainer.appendChild(logEntry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+          } else if (data.type === 'mqtt_log') {
+            console.log('Processing received ws mqtt_log:', data);
+            const mqttLogContainer = document.getElementById('mqtt-log-container');
+            const logEntry = document.createElement('div');
+            logEntry.textContent = data.message;
+            mqttLogContainer.appendChild(logEntry);
+            mqttLogContainer.scrollTop = mqttLogContainer.scrollHeight;
+          } else {
+            console.log('Processing received ws state:', data);
+            deviceState = data;
+            updateUIFromState(data);
+          }
+        } catch (e) {
+          console.error('Error parsing WebSocket message:', e);
+        }
+      };
+
+      socket.onclose = function(event) {
+        console.log('WebSocket disconnected, attempting to reconnect...');
+        if (!document.hidden) {
+          setTimeout(connectWebSocket, 3000);
+        }
+      };
+
+      socket.onerror = function(error) {
+        console.error('WebSocket error:', error);
+        socket.close();
+      };
+    }
+
+    function updateUIFromState(state) {
+      if (!state) {
+        console.error('updateUIFromState called with null state');
+        return;
+      }
+
+      document.getElementById('api_version').innerText = state.version;
+
+      if (state.ac) {
+        document.getElementById('acstatetoggle').dataset.state = state.ac.power ? '1' : '0';
+        document.getElementById('acstatelabel').innerHTML = 'Power: ' + (state.ac.power ? 'On' : 'Off');
+        document.getElementById('acmodeselect').value = state.ac.mode;
+        document.getElementById('acfanmodeselect').value = state.ac.fanMode;
+        document.getElementById('actempinput').value = state.ac.temp;
+        document.querySelector('label[for="actempinput"]').innerHTML = 'Temperature: ' + state.ac.temp;
+      }
+
+      if (state.colourled) {
+        const colourLedElement = document.getElementById('colourled');
+        colourLedElement.dataset.state = state.colourled.state ? '1' : '0';
+        colourLedElement.dataset.brightness = state.colourled.brightness;
+        colourLedElement.innerText = 'Pin Colour LED: ' + (state.colourled.state ? 'ON' : 'OFF');
+        if (state.colourled.state) {
+          colourLedElement.classList.remove('button-off');
+        } else {
+          colourLedElement.classList.add('button-off');
+        }
+        document.getElementById('colourLEDBrightness').value = state.colourled.brightness;
+      }
+
+      if (state.buzzer) {
+        document.getElementById('buzzerVolume').value = state.buzzer.volume;
+      }
+
+      if (state.outputs) {
+        const outputPinsContainer = document.getElementById('output-pins-container');
+        outputPinsContainer.innerHTML = '';
+
+        for (let i = 0; i < state.outputs.length; i++) {
+          const output = state.outputs[i];
+          const pinState = output.state ? 'ON' : 'OFF';
+          const buttonClass = output.state ? 'button' : 'button button-off';
+
+          const pinDiv = document.createElement('div');
+
+          const toggleLink = document.createElement('a');
+          toggleLink.id = 'outPin' + output.pin;
+          toggleLink.dataset.state = output.state ? '1' : '0';
+          toggleLink.href = 'javascript:void(0)';
+          toggleLink.onclick = function() {
+            submitApiRequest('/api/out/' + output.pin + '/' + (parseInt(this.dataset.state) ? 0 : 1));
+            return false;
+          };
+          toggleLink.className = buttonClass;
+          toggleLink.innerText = 'Pin ' + output.pin + ': ' + pinState;
+
+          pinDiv.appendChild(toggleLink);
+          pinDiv.appendChild(document.createTextNode(' - '));
+
+          const pressLink = document.createElement('a');
+          pressLink.href = 'javascript:void(0)';
+          pressLink.onclick = function() {
+            submitApiRequest('/api/out/' + output.pin + '/press');
+            return false;
+          };
+          pressLink.className = 'button button-off';
+          pressLink.innerText = 'Pin ' + output.pin + ': PRESS';
+
+          pinDiv.appendChild(pressLink);
+          outputPinsContainer.appendChild(pinDiv);
+        }
+      }
+
+      if (state.inputs) {
+        const inputPinsContainer = document.getElementById('input-pins-container');
+        inputPinsContainer.innerHTML = '';
+
+        for (let i = 0; i < state.inputs.length; i++) {
+          const input = state.inputs[i];
+          const pinState = input.state ? 'ON' : 'OFF';
+          const buttonClass = input.state ? 'button' : 'button button-off';
+
+          const pinDiv = document.createElement('div');
+
+          const statusLink = document.createElement('a');
+          statusLink.id = 'inPin' + input.pin;
+          statusLink.href = 'javascript:void(0)';
+          statusLink.className = buttonClass;
+          statusLink.innerText = 'Pin ' + input.pin + ': ' + pinState;
+
+          pinDiv.appendChild(statusLink);
+          inputPinsContainer.appendChild(pinDiv);
+        }
+      }
+
+      if (state.zones) {
+        const zonesContainer = document.getElementById('zones-container');
+        zonesContainer.innerHTML = '';
+
+        for (let i = 0; i < state.zones.length; i++) {
+          const zone = state.zones[i];
+          const zoneState = zone.state ? 'ON' : 'OFF';
+          const buttonClass = zone.state ? 'button' : 'button button-off';
+
+          const zoneDiv = document.createElement('div');
+
+          const toggleLink = document.createElement('a');
+          toggleLink.id = 'zone' + zone.id;
+          toggleLink.dataset.id = zone.id;
+          toggleLink.dataset.state = zone.state ? '1' : '0';
+          toggleLink.href = 'javascript:void(0)';
+          toggleLink.onclick = function() {
+            submitApiRequest('/api/zone/' + this.dataset.id + '/toggle');
+            return false;
+          };
+          toggleLink.className = buttonClass;
+          toggleLink.innerText = 'Zone ' + zone.id + ': ' + zoneState;
+
+          zoneDiv.appendChild(toggleLink);
+          zonesContainer.appendChild(zoneDiv);
+        }
+      }
+
+      if (state.config && state.config.mqtt) {
+        document.getElementById('mqtt_broker').value = state.config.mqtt.brokerUrl || '';
+        document.getElementById('mqtt_port').value = state.config.mqtt.brokerPort || '1883';
+        document.getElementById('mqtt_user').value = state.config.mqtt.username || '';
+        document.getElementById('mqtt_pass').value = state.config.mqtt.password || '';
+        document.getElementById('mqtt_topic').value = state.config.mqtt.baseTopic || '';
+      }
+
+      if (state.config && state.config.ac) {
+        document.getElementById('ac_rx_pin').value = state.config.ac.rxPin || '';
+        document.getElementById('ac_tx_pin').value = state.config.ac.txPin || '';
+      }
+
+      if (state.config && state.config.zones) {
+        for (let i = 0; i < 8; i++) {
+          const zone = i < state.config.zones.length ? state.config.zones[i] : null;
+          document.getElementById('zone_id_' + i).value = zone ? zone.id : '';
+          document.getElementById('zone_input_pin_' + i).value = zone ? zone.inputPin : '';
+          document.getElementById('zone_output_pin_' + i).value = zone ? zone.outputPin : '';
+        }
+      }
+
+      if (state.config && state.config.outputs) {
+        for (let i = 0; i < 8; i++) {
+          const output = i < state.config.outputs.length ? state.config.outputs[i] : null;
+          document.getElementById('output_pin_' + i).value = output ? output : '';
+        }
+      }
+
+      if (state.config && state.config.inputs) {
+        for (let i = 0; i < 8; i++) {
+          const input = i < state.config.inputs.length ? state.config.inputs[i] : null;
+          document.getElementById('input_pin_' + i).value = input ? input : '';
+        }
+      }
+    }
+
+    function saveMqttConfig() {
+      const broker = document.getElementById('mqtt_broker').value;
+      const port = document.getElementById('mqtt_port').value;
+      const user = document.getElementById('mqtt_user').value;
+      const pass = document.getElementById('mqtt_pass').value;
+      const topic = document.getElementById('mqtt_topic').value;
+
+      const url = `/api/mqtt/save?broker=${encodeURIComponent(broker)}&port=${port}&user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}&topic=${encodeURIComponent(topic)}`;
+
+      fetch(url, { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          console.log('MQTT Config Saved:', data);
+          alert('MQTT Config Saved. The device will now restart.');
+        })
+        .catch(error => {
+          console.error('Error saving MQTT config:', error);
+        });
+    }
+
+    function saveZoneConfig() {
+      let zones = [];
+      for (let i = 0; i < 8; i++) {
+        const zoneId = document.getElementById('zone_id_' + i).value;
+        const inputPin = document.getElementById('zone_input_pin_' + i).value;
+        const outputPin = document.getElementById('zone_output_pin_' + i).value;
+
+        if (zoneId && zoneId.trim() !== '' && inputPin && inputPin.trim() !== '' && outputPin && outputPin.trim() !== '') {
+          zones.push({
+            id: zoneId,
+            inputPin: parseInt(inputPin),
+            outputPin: parseInt(outputPin)
+          });
+        }
+      }
+
+      const url = `/api/zones/save`;
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zones: zones })
+      })
+      .then(response => response.json())
+      .then(data => {
+        console.log('Zone Config Saved:', data);
+        alert('Zone Configuration Saved. The device will now restart.');
+      })
+      .catch(error => {
+        console.error('Error saving zone config:', error);
+      });
+    }
+
+    function savePinConfig() {
+      const acRxPin = document.getElementById('ac_rx_pin').value;
+      const acTxPin = document.getElementById('ac_tx_pin').value;
+
+      let outputPins = [];
+      for (let i = 0; i < 8; i++) {
+        const pinValue = document.getElementById('output_pin_' + i).value;
+        if (pinValue && pinValue.trim() !== '') {
+          outputPins.push(parseInt(pinValue));
+        }
+      }
+
+      let inputPins = [];
+      for (let i = 0; i < 8; i++) {
+        const pinValue = document.getElementById('input_pin_' + i).value;
+        if (pinValue && pinValue.trim() !== '') {
+          inputPins.push(parseInt(pinValue));
+        }
+      }
+
+      const url = `/api/pins/save`;
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          acRxPin: parseInt(acRxPin),
+          acTxPin: parseInt(acTxPin),
+          outputPins: outputPins,
+          inputPins: inputPins
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        console.log('Pin Config Saved:', data);
+        alert('Pin Configuration Saved. The device will now restart.');
+      })
+      .catch(error => {
+        console.error('Error saving pin config:', error);
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      reloadCurrentStateAsync()
+        .then(() => connectWebSocket());
+    });
+  </script>
+</head>
+<body>
+  <h1>AC & Zone Controller</h1>
+  <small id="controller-version">UI: V2.2 API: V<span id="api_version"></span></small>
+
+  <h3>Update Current State</h3>
+  <div class="button-container">
+    <input type="button" value="Refresh" onclick="reloadCurrentStateAsync();return false;">
+  </div>
+
+  <h3>Fujitsu AC Controller Status</h3>
+  <div>
+    <label id="acstatelabel">Power: Off</label>&nbsp;
+    <input id="acstatetoggle" type="button" value="Toggle" data-state="0" onclick="submitApiRequest('/api/ac/power/' + (this.dataset.state === '1' ? '0' : '1')); return false;">
+    <br/>&nbsp;<br/>
+    <label for="acmodeselect">AC Mode:</label>&nbsp;
+    <select id="acmodeselect" onchange="submitApiRequest('/api/ac/mode/' + this.value.toLowerCase()); return false;">
+      <option value="Fan">Fan</option>
+      <option value="Heat">Heat</option>
+      <option value="Dry">Dry</option>
+      <option value="Cool">Cool</option>
+      <option value="Auto">Auto</option>
+    </select>
+    <br/>&nbsp;<br/>
+    <label for="acfanmodeselect">Fan Mode:</label>&nbsp;
+    <select id="acfanmodeselect" onchange="submitApiRequest('/api/ac/fan/' + this.value.toLowerCase()); return false;">
+      <option value="Quiet">Quiet</option>
+      <option value="Low">Low</option>
+      <option value="Medium">Medium</option>
+      <option value="High">High</option>
+      <option value="Auto">Auto</option>
+    </select>
+    <br/>&nbsp;<br/>
+    <label for="actempinput">Temperature: 22</label>&nbsp;
+    <input type="text" id="actempinput" value="22" />
+    <input type="button" value="Set" onclick="submitApiRequest('/api/ac/temp/' + document.getElementById('actempinput').value); return false;">
+  </div>
+
+  <h3>MQTT Configuration</h3>
+  <div>
+    <label for="mqtt_broker">MQTT Broker:</label>
+    <input type="text" id="mqtt_broker" name="mqtt_broker" placeholder="192.168.11.220"><br>
+    <label for="mqtt_port">MQTT Port:</label>
+    <input type="number" id="mqtt_port" name="mqtt_port" placeholder="1883"><br>
+    <label for="mqtt_user">MQTT User:</label>
+    <input type="text" id="mqtt_user" name="mqtt_user" placeholder=""><br>
+    <label for="mqtt_pass">MQTT Password:</label>
+    <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder=""><br>
+    <label for="mqtt_topic">MQTT Topic:</label>
+    <input type="text" id="mqtt_topic" name="mqtt_topic" placeholder="accontroller"><br>
+    <input type="button" value="Save MQTT Config" onclick="saveMqttConfig()">
+  </div>
+
+  <h3>Pin Configuration</h3>
+  <div>
+    <h4>AC Comms Pins</h4>
+    <label for="ac_rx_pin">AC RX Pin:</label>
+    <input type="number" id="ac_rx_pin" name="ac_rx_pin" placeholder="25"><br>
+    <label for="ac_tx_pin">AC TX Pin:</label>
+    <input type="number" id="ac_tx_pin" name="ac_tx_pin" placeholder="32"><br>
+
+    <h4>Output Pins</h4>
+    <div id="output_pins_container">
+      <div class="pin-input">
+        <label for="output_pin_0">Output Pin 1:</label>
+        <input type="number" id="output_pin_0" name="output_pin_0" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_1">Output Pin 2:</label>
+        <input type="number" id="output_pin_1" name="output_pin_1" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_2">Output Pin 3:</label>
+        <input type="number" id="output_pin_2" name="output_pin_2" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_3">Output Pin 4:</label>
+        <input type="number" id="output_pin_3" name="output_pin_3" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_4">Output Pin 5:</label>
+        <input type="number" id="output_pin_4" name="output_pin_4" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_5">Output Pin 6:</label>
+        <input type="number" id="output_pin_5" name="output_pin_5" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_6">Output Pin 7:</label>
+        <input type="number" id="output_pin_6" name="output_pin_6" value="">
+      </div>
+      <div class="pin-input">
+        <label for="output_pin_7">Output Pin 8:</label>
+        <input type="number" id="output_pin_7" name="output_pin_7" value="">
+      </div>
+    </div>
+
+    <h4>Input Pins</h4>
+    <div id="input_pins_container">
+      <div class="pin-input">
+        <label for="input_pin_0">Input Pin 1:</label>
+        <input type="number" id="input_pin_0" name="input_pin_0" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_1">Input Pin 2:</label>
+        <input type="number" id="input_pin_1" name="input_pin_1" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_2">Input Pin 3:</label>
+        <input type="number" id="input_pin_2" name="input_pin_2" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_3">Input Pin 4:</label>
+        <input type="number" id="input_pin_3" name="input_pin_3" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_4">Input Pin 5:</label>
+        <input type="number" id="input_pin_4" name="input_pin_4" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_5">Input Pin 6:</label>
+        <input type="number" id="input_pin_5" name="input_pin_5" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_6">Input Pin 7:</label>
+        <input type="number" id="input_pin_6" name="input_pin_6" value="">
+      </div>
+      <div class="pin-input">
+        <label for="input_pin_7">Input Pin 8:</label>
+        <input type="number" id="input_pin_7" name="input_pin_7" value="">
+      </div>
+    </div>
+
+    <br><input type="button" value="Save Pin Configuration" onclick="savePinConfig()">
+  </div>
+
+  <h3>Colour Cycling LED Control</h3>
+  <div class="button-container">
+    <div>
+      <a id="colourled" data-state="1" data-brightness="30" href="javascript:void(0)" onclick="submitApiRequest('/api/colourled/state/' + (parseInt(this.dataset.state) ? 0 : 1));return false;" class="button">Pin Colour LED: ON</a>
+    </div>
+    <div>
+      <label>Brightness:&nbsp;</label>
+      <input id="colourLEDBrightness" type="number" value="30">
+      <input type="button" value="Set" onclick="submitApiRequest('/api/colourled/brightness/' + document.getElementById('colourLEDBrightness').value);return false;">
+    </div>
+  </div>
+
+  <h3>Buzzer Control</h3>
+  <div class="button-container">
+    <div>
+      <label>Volume:&nbsp;</label>
+      <input id="buzzerVolume" type="number" min="0" max="255" value="64">
+      <input type="button" value="Set" onclick="submitApiRequest('/api/buzzer/volume/' + document.getElementById('buzzerVolume').value);return false;">
+    </div>
+    <br/>
+    <div>
+      <label>Test Tune:&nbsp;</label>
+      <input id="buzzerTune" type="number" min="0" max="13">
+      <input type="button" value="Test Buzzer" onclick="submitApiRequest('/api/buzzer/test/' + document.getElementById('buzzerTune').value);return false;" class="button button-off">
+    </div>
+  </div>
+
+  <h3>Zone Configuration</h3>
+  <div>
+    <h4>Zone Configuration</h4>
+    <div id="zones_container">
+      <div class="zone-input">
+        <label for="zone_id_0">Zone 1 ID:</label>
+        <input type="text" id="zone_id_0" name="zone_id_0" value="">
+        <label for="zone_input_pin_0">Input Pin:</label>
+        <input type="number" id="zone_input_pin_0" name="zone_input_pin_0" value="">
+        <label for="zone_output_pin_0">Output Pin:</label>
+        <input type="number" id="zone_output_pin_0" name="zone_output_pin_0" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_1">Zone 2 ID:</label>
+        <input type="text" id="zone_id_1" name="zone_id_1" value="">
+        <label for="zone_input_pin_1">Input Pin:</label>
+        <input type="number" id="zone_input_pin_1" name="zone_input_pin_1" value="">
+        <label for="zone_output_pin_1">Output Pin:</label>
+        <input type="number" id="zone_output_pin_1" name="zone_output_pin_1" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_2">Zone 3 ID:</label>
+        <input type="text" id="zone_id_2" name="zone_id_2" value="">
+        <label for="zone_input_pin_2">Input Pin:</label>
+        <input type="number" id="zone_input_pin_2" name="zone_input_pin_2" value="">
+        <label for="zone_output_pin_2">Output Pin:</label>
+        <input type="number" id="zone_output_pin_2" name="zone_output_pin_2" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_3">Zone 4 ID:</label>
+        <input type="text" id="zone_id_3" name="zone_id_3" value="">
+        <label for="zone_input_pin_3">Input Pin:</label>
+        <input type="number" id="zone_input_pin_3" name="zone_input_pin_3" value="">
+        <label for="zone_output_pin_3">Output Pin:</label>
+        <input type="number" id="zone_output_pin_3" name="zone_output_pin_3" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_4">Zone 5 ID:</label>
+        <input type="text" id="zone_id_4" name="zone_id_4" value="">
+        <label for="zone_input_pin_4">Input Pin:</label>
+        <input type="number" id="zone_input_pin_4" name="zone_input_pin_4" value="">
+        <label for="zone_output_pin_4">Output Pin:</label>
+        <input type="number" id="zone_output_pin_4" name="zone_output_pin_4" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_5">Zone 6 ID:</label>
+        <input type="text" id="zone_id_5" name="zone_id_5" value="">
+        <label for="zone_input_pin_5">Input Pin:</label>
+        <input type="number" id="zone_input_pin_5" name="zone_input_pin_5" value="">
+        <label for="zone_output_pin_5">Output Pin:</label>
+        <input type="number" id="zone_output_pin_5" name="zone_output_pin_5" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_6">Zone 7 ID:</label>
+        <input type="text" id="zone_id_6" name="zone_id_6" value="">
+        <label for="zone_input_pin_6">Input Pin:</label>
+        <input type="number" id="zone_input_pin_6" name="zone_input_pin_6" value="">
+        <label for="zone_output_pin_6">Output Pin:</label>
+        <input type="number" id="zone_output_pin_6" name="zone_output_pin_6" value="">
+      </div>
+      <div class="zone-input">
+        <label for="zone_id_7">Zone 8 ID:</label>
+        <input type="text" id="zone_id_7" name="zone_id_7" value="">
+        <label for="zone_input_pin_7">Input Pin:</label>
+        <input type="number" id="zone_input_pin_7" name="zone_input_pin_7" value="">
+        <label for="zone_output_pin_7">Output Pin:</label>
+        <input type="number" id="zone_output_pin_7" name="zone_output_pin_7" value="">
+      </div>
+    </div>
+    <br><input type="button" value="Save Zone Configuration" onclick="saveZoneConfig()">
+  </div>
+
+  <h3>Zone Control</h3>
+  <div class="button-container" id="zones-container">
+    <!-- Dynamic zone controls -->
+  </div>
+
+  <h3>Available GPIO Output Control Pins</h3>
+  <div class="button-container" id="output-pins-container">
+    <!-- Dynamic output pin controls -->
+  </div>
+
+  <h3>Available Input Control Pins</h3>
+  <div class="button-container" id="input-pins-container">
+    <!-- Dynamic input pin statuses -->
+  </div>
+
+  <h3><a href="/update">Upload new firmware</a></h3>
+
+  <h3>MQTT Messages</h3>
+  <div id="mqtt-log-container" style="height: 200px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; text-align: left; background-color: #f9f9f9;"></div>
+  <input type="button" value="Clear logs" onclick="document.getElementById('mqtt-log-container').innerHTML = '';return false;"/>
+
+  <h3>Device Logs</h3>
+  <div id="log-container" style="height: 200px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; text-align: left; background-color: #f9f9f9;"></div>
+
+</body>
+</html>
