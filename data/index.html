@@ -228,6 +228,7 @@
         document.getElementById('mqtt_user').value = state.config.mqtt.username || '';
         document.getElementById('mqtt_pass').value = state.config.mqtt.password || '';
         document.getElementById('mqtt_topic').value = state.config.mqtt.baseTopic || '';
+        document.getElementById('mqtt_discovery_prefix').value = state.config.mqtt.discoveryPrefix || '';
       }
 
       if (state.config && state.config.ac) {
@@ -265,8 +266,9 @@
       const user = document.getElementById('mqtt_user').value;
       const pass = document.getElementById('mqtt_pass').value;
       const topic = document.getElementById('mqtt_topic').value;
+      const discoveryPrefix = document.getElementById('mqtt_discovery_prefix').value;
 
-      const url = `/api/mqtt/save?broker=${encodeURIComponent(broker)}&port=${port}&user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}&topic=${encodeURIComponent(topic)}`;
+      const url = `/api/mqtt/save?broker=${encodeURIComponent(broker)}&port=${port}&user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}&topic=${encodeURIComponent(topic)}&discovery_prefix=${encodeURIComponent(discoveryPrefix)}`;
 
       fetch(url, { method: 'POST' })
         .then(response => response.json())
@@ -304,7 +306,7 @@
       .then(response => response.json())
       .then(data => {
         console.log('Zone Config Saved:', data);
-        alert('Zone Configuration Saved. The device will now restart.');
+        alert('Zone Configuration Saved.');
       })
       .catch(error => {
         console.error('Error saving zone config:', error);
@@ -407,7 +409,10 @@
     <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder=""><br>
     <label for="mqtt_topic">MQTT Topic:</label>
     <input type="text" id="mqtt_topic" name="mqtt_topic" placeholder="accontroller"><br>
+    <label for="mqtt_discovery_prefix">MQTT Discovery Prefix:</label>
+    <input type="text" id="mqtt_discovery_prefix" name="mqtt_discovery_prefix" placeholder="baumshouse"><br>
     <input type="button" value="Save MQTT Config" onclick="saveMqttConfig()">
+    <input type="button" value="Publish Discovery Document" onclick="submitApiRequest('/api/mqtt/publish_discovery');return false;">
   </div>
 
   <h3>Pin Configuration</h3>

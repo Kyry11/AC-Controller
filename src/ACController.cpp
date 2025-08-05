@@ -13,6 +13,7 @@ const char* CONTROLLER_VERSION = "1.3";
 #include <Preferences.h>
 #include <DNSServer.h>
 #include <SPIFFS.h>
+#include <esp_wifi.h>
 
 #include "melody_player/melody_player.h"
 #include "melody_player/melody_factory.h"
@@ -20,6 +21,10 @@ const char* CONTROLLER_VERSION = "1.3";
 
 unsigned long lastMqttConnectionAttempt = 0; // Track last MQTT connection attempt time
 const int mqttReconnectInterval = 5000; // 5 seconds between connection attempts
+
+// Home Assistant MQTT Discovery
+char mqttDiscoveryPrefix[32] = "homeassistant"; // Default Home Assistant discovery prefix
+bool haDiscoveryPublished = false; // Flag to track if discovery messages have been published
 
 // Preferences keys for eeprom config
 const char* PREF_KEY_SSID = "wifi_ssid";
@@ -29,6 +34,7 @@ const char* PREF_KEY_MQTT_PORT = "mqtt_port";
 const char* PREF_KEY_MQTT_USER = "mqtt_user";
 const char* PREF_KEY_MQTT_PASS = "mqtt_pass";
 const char* PREF_KEY_MQTT_TOPIC = "mqtt_topic";
+const char* PREF_KEY_MQTT_DISCOVERY_PREFIX = "mqtt_disc_pfx";
 
 // Preferences keys for pin configuration
 const char* PREF_KEY_AC_RX_PIN = "ac_rx_pin";
@@ -163,6 +169,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 String buildHtmlPage(); // Keep existing HTML builder
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void reconnectMQTT();
+void publishHomeAssistantDiscovery();
 // --- End Forward declarations ---
 
 
@@ -274,7 +281,7 @@ void processRootRoute(AsyncWebServerRequest *request) {
   request->send(200, "text/html", getStaticWebApp());
 }
 
-String buildCurrentStatePayload(bool includeConfigs = false) {
+String buildCurrentStatePayload(bool includeConfigs = false, bool includeMetrics = false) {
   JsonDocument doc;
   JsonArray outputsConfig;
   JsonArray inputsConfig;
@@ -288,6 +295,7 @@ String buildCurrentStatePayload(bool includeConfigs = false) {
     doc["config"]["mqtt"]["username"] = mqttUser;
     doc["config"]["mqtt"]["password"] = mqttPassword;
     doc["config"]["mqtt"]["baseTopic"] = mqttBaseTopic;
+    doc["config"]["mqtt"]["discoveryPrefix"] = mqttDiscoveryPrefix;
     outputsConfig = doc["config"]["outputs"].to<JsonArray>();
     inputsConfig = doc["config"]["inputs"].to<JsonArray>();
     zonesConfig = doc["config"]["zones"].to<JsonArray>();
@@ -330,6 +338,22 @@ String buildCurrentStatePayload(bool includeConfigs = false) {
   colourled["brightness"] = colourLEDBrightness; // Already uint8_t, no need for String()
   JsonObject buzzer = doc["buzzer"].to<JsonObject>();
   buzzer["volume"] = INITIAL_BUZZER_VOLUME;
+
+  if (includeMetrics) {
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
+    metrics["uptime"] = millis() / 1000; // Uptime in seconds
+    metrics["heap_free"] = ESP.getFreeHeap();
+    metrics["heap_size"] = ESP.getHeapSize();
+    metrics["heap_min_free"] = ESP.getMinFreeHeap();
+    metrics["cpu_freq"] = ESP.getCpuFreqMHz();
+    metrics["sketch_size"] = ESP.getSketchSize();
+    metrics["sketch_free"] = ESP.getFreeSketchSpace();
+    metrics["flash_size"] = ESP.getFlashChipSize();
+    metrics["wifi_rssi"] = WiFi.RSSI();
+    metrics["mqtt_connected"] = mqttClient.connected();
+    metrics["ws_clients"] = ws.count();
+  }
+
   String payload;
   serializeJson(doc, payload);
   return payload;
@@ -337,8 +361,12 @@ String buildCurrentStatePayload(bool includeConfigs = false) {
 
 void processApiStatusRoute(AsyncWebServerRequest *request) {
   bool includeConfig = false;
+  bool includeMetrics = false;
+
   if (request->hasParam("includeConfig")) includeConfig = request->getParam("includeConfig")->value() == "true";
-  request->send(200, "application/json", buildCurrentStatePayload(includeConfig));
+  if (request->hasParam("includeMetrics")) includeMetrics = request->getParam("includeMetrics")->value() == "true";
+
+  request->send(200, "application/json", buildCurrentStatePayload(includeConfig, includeMetrics));
 }
 
 void processSaveMqttConfigRoute(AsyncWebServerRequest *request) {
@@ -348,10 +376,21 @@ void processSaveMqttConfigRoute(AsyncWebServerRequest *request) {
     if (request->hasParam("user")) preferences.putString(PREF_KEY_MQTT_USER, request->getParam("user")->value());
     if (request->hasParam("pass")) preferences.putString(PREF_KEY_MQTT_PASS, request->getParam("pass")->value());
     if (request->hasParam("topic")) preferences.putString(PREF_KEY_MQTT_TOPIC, request->getParam("topic")->value());
+    if (request->hasParam("discovery_prefix")) preferences.putString(PREF_KEY_MQTT_DISCOVERY_PREFIX, request->getParam("discovery_prefix")->value());
     preferences.end();
     request->send(200, "application/json", "{\"success\":true}");
     delay(1000);
     ESP.restart();
+}
+
+void processPublishDiscoveryRoute(AsyncWebServerRequest *request) {
+    if (mqttClient.connected()) {
+        haDiscoveryPublished = false; // Reset the flag to force republishing
+        publishHomeAssistantDiscovery(); // Republish discovery documents
+        request->send(200, "application/json", "{\"success\":true,\"message\":\"MQTT discovery documents republished\"}");
+    } else {
+        request->send(400, "application/json", "{\"success\":false,\"error\":\"MQTT client not connected\"}");
+    }
 }
 
 void processSaveZoneConfigRoute(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
@@ -932,12 +971,208 @@ void reconnectMQTT() {
             Serial.print("connected.. ");
             mqttClient.subscribe(topic.c_str());
             Serial.println("and subscribed to " + topic);
+
+            // Publish Home Assistant discovery information
+            if (!haDiscoveryPublished) {
+                publishHomeAssistantDiscovery();
+                haDiscoveryPublished = true;
+            }
         } else {
             Serial.print("failed, rc=");
             Serial.print(mqttClient.state());
             Serial.println(" will try again in " + String(mqttReconnectInterval) + " milliseconds");
         }
     }
+}
+
+// Function to publish Home Assistant MQTT discovery information
+void publishHomeAssistantDiscovery() {
+    if (!mqttClient.connected()) {
+        return;
+    }
+
+    Serial.println("Publishing Home Assistant MQTT discovery information...");
+
+    // Get device information
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    String deviceId = "baums_ac_" + WiFi.macAddress();
+    deviceId.replace(":", "");
+    deviceId.toLowerCase();
+
+    // Create device information JSON object (used in all discovery messages)
+    JsonDocument deviceDoc;
+    deviceDoc["identifiers"] = deviceId;
+    deviceDoc["name"] = "AC And Zone Controller";
+    deviceDoc["sw_version"] = CONTROLLER_VERSION;
+    deviceDoc["model"] = "AC And Zone Controller";
+    deviceDoc["manufacturer"] = "Kyryll";
+
+    String deviceJson;
+    serializeJson(deviceDoc, deviceJson);
+
+    // Climate entity discovery
+    {
+        JsonDocument discoveryDoc;
+        discoveryDoc["name"] = "AC";
+        discoveryDoc["unique_id"] = deviceId + "_climate";
+        discoveryDoc["device"] = deviceDoc;
+        discoveryDoc["icon"] = "mdi:air-conditioner";
+
+        // Define MQTT topics
+        discoveryDoc["~"] = mqttBaseTopic;
+        discoveryDoc["current_temperature_topic"] = "~/status";
+        discoveryDoc["current_temperature_template"] = "{{ value_json.ac.temp }}";
+        discoveryDoc["mode_command_topic"] = "~/ac/set";
+        discoveryDoc["mode_command_template"] = "{\"setting\":\"mode\",\"value\":\"{{ value }}\"}";
+        discoveryDoc["mode_state_topic"] = "~/status";
+        discoveryDoc["mode_state_template"] = "{% if value_json.ac.power == false %}off{% else %}{{ value_json.ac.mode | lower }}{% endif %}";
+        discoveryDoc["temperature_command_topic"] = "~/ac/set";
+        discoveryDoc["temperature_command_template"] = "{\"setting\":\"temp\",\"value\":{{ value }}}";
+        discoveryDoc["temperature_state_topic"] = "~/status";
+        discoveryDoc["temperature_state_template"] = "{{ value_json.ac.temp }}";
+        discoveryDoc["fan_mode_command_topic"] = "~/ac/set";
+        discoveryDoc["fan_mode_command_template"] = "{\"setting\":\"fan\",\"value\":\"{{ value }}\"}";
+        discoveryDoc["fan_mode_state_topic"] = "~/status";
+        discoveryDoc["fan_mode_state_template"] = "{{ value_json.ac.fanMode | lower }}";
+        discoveryDoc["power_command_topic"] = "~/ac/set";
+        discoveryDoc["power_command_template"] = "{\"setting\":\"power\",\"value\":\"{{ value }}\"}";
+
+        // Define supported modes and features
+        JsonArray modes = discoveryDoc["modes"].to<JsonArray>();
+        modes.add("off");
+        modes.add("cool");
+        modes.add("heat");
+        modes.add("fan_only");
+        modes.add("dry");
+        modes.add("auto");
+
+        JsonArray fanModes = discoveryDoc["fan_modes"].to<JsonArray>();
+        fanModes.add("auto");
+        fanModes.add("quiet");
+        fanModes.add("low");
+        fanModes.add("medium");
+        fanModes.add("high");
+
+        discoveryDoc["min_temp"] = 16;
+        discoveryDoc["max_temp"] = 30;
+        discoveryDoc["temp_step"] = 1;
+        discoveryDoc["temperature_unit"] = "C";
+
+        String discoveryJson;
+        serializeJson(discoveryDoc, discoveryJson);
+
+        String discoveryTopic = String(mqttDiscoveryPrefix) + "/climate/" + deviceId + "/config";
+        mqttClient.publish(discoveryTopic.c_str(), discoveryJson.c_str(), true);
+        Serial.println("Published climate discovery to: " + discoveryTopic);
+    }
+
+    // Publish zone switches
+    for (int i = 0; i < zoneCount; i++) {
+        JsonDocument discoveryDoc;
+        String zoneId = zones[i].id;
+        String safeZoneId = zoneId;
+        safeZoneId.replace(" ", "_");
+        safeZoneId.toLowerCase();
+
+        discoveryDoc["name"] = "Zone " + zoneId;
+        discoveryDoc["unique_id"] = deviceId + "_zone_" + safeZoneId;
+        discoveryDoc["device"] = deviceDoc;
+        discoveryDoc["icon"] = "mdi:air-filter";
+
+        // Define MQTT topics
+        discoveryDoc["~"] = mqttBaseTopic;
+        discoveryDoc["command_topic"] = "~/zone/set";
+        discoveryDoc["command_template"] = "{\"id\":\"" + zoneId + "\",\"action\":\"{{ value }}\"}";
+        discoveryDoc["state_topic"] = "~/status";
+        discoveryDoc["state_template"] = "{% for zone in value_json.zones %}{% if zone.id == '" + zoneId + "' %}{% if zone.state %}on{% else %}off{% endif %}{% endif %}{% endfor %}";
+        discoveryDoc["payload_on"] = "on";
+        discoveryDoc["payload_off"] = "off";
+
+        String discoveryJson;
+        serializeJson(discoveryDoc, discoveryJson);
+
+        String discoveryTopic = String(mqttDiscoveryPrefix) + "/switch/" + deviceId + "_zone_" + safeZoneId + "/config";
+        mqttClient.publish(discoveryTopic.c_str(), discoveryJson.c_str(), true);
+        Serial.println("Published zone switch discovery for " + zoneId + " to: " + discoveryTopic);
+    }
+
+    // Publish LED switch
+    {
+        JsonDocument discoveryDoc;
+        discoveryDoc["name"] = "LED";
+        discoveryDoc["unique_id"] = deviceId + "_led";
+        discoveryDoc["device"] = deviceDoc;
+        discoveryDoc["icon"] = "mdi:led-on";
+
+        // Define MQTT topics
+        discoveryDoc["~"] = mqttBaseTopic;
+        discoveryDoc["command_topic"] = "~/colourled/state";
+        discoveryDoc["state_topic"] = "~/status";
+        discoveryDoc["state_template"] = "{% if value_json.colourled.state %}on{% else %}off{% endif %}";
+        discoveryDoc["payload_on"] = "1";
+        discoveryDoc["payload_off"] = "0";
+
+        String discoveryJson;
+        serializeJson(discoveryDoc, discoveryJson);
+
+        String discoveryTopic = String(mqttDiscoveryPrefix) + "/switch/" + deviceId + "_led/config";
+        mqttClient.publish(discoveryTopic.c_str(), discoveryJson.c_str(), true);
+        Serial.println("Published LED switch discovery to: " + discoveryTopic);
+    }
+
+    // Publish LED brightness
+    {
+        JsonDocument discoveryDoc;
+        discoveryDoc["name"] = "LED Brightness";
+        discoveryDoc["unique_id"] = deviceId + "_led_brightness";
+        discoveryDoc["device"] = deviceDoc;
+        discoveryDoc["icon"] = "mdi:brightness-6";
+
+        // Define MQTT topics
+        discoveryDoc["~"] = mqttBaseTopic;
+        discoveryDoc["command_topic"] = "~/colourled/brightness";
+        discoveryDoc["state_topic"] = "~/status";
+        discoveryDoc["state_template"] = "{{ value_json.colourled.brightness }}";
+        discoveryDoc["min"] = 0;
+        discoveryDoc["max"] = 255;
+
+        String discoveryJson;
+        serializeJson(discoveryDoc, discoveryJson);
+
+        String discoveryTopic = String(mqttDiscoveryPrefix) + "/number/" + deviceId + "_led_brightness/config";
+        mqttClient.publish(discoveryTopic.c_str(), discoveryJson.c_str(), true);
+        Serial.println("Published LED brightness discovery to: " + discoveryTopic);
+    }
+
+    // Publish buzzer volume
+    {
+        JsonDocument discoveryDoc;
+        discoveryDoc["name"] = "Buzzer Volume";
+        discoveryDoc["unique_id"] = deviceId + "_buzzer_volume";
+        discoveryDoc["device"] = deviceDoc;
+        discoveryDoc["icon"] = "mdi:volume-high";
+
+        // Define MQTT topics
+        discoveryDoc["~"] = mqttBaseTopic;
+        discoveryDoc["command_topic"] = "~/buzzer/volume";
+        discoveryDoc["state_topic"] = "~/status";
+        discoveryDoc["state_template"] = "{{ value_json.buzzer.volume }}";
+        discoveryDoc["min"] = 0;
+        discoveryDoc["max"] = 255;
+
+        String discoveryJson;
+        serializeJson(discoveryDoc, discoveryJson);
+
+        String discoveryTopic = String(mqttDiscoveryPrefix) + "/number/" + deviceId + "_buzzer_volume/config";
+        mqttClient.publish(discoveryTopic.c_str(), discoveryJson.c_str(), true);
+        Serial.println("Published buzzer volume discovery to: " + discoveryTopic);
+    }
+
+    Serial.println("Home Assistant MQTT discovery information published successfully");
 }
 
 void setup() {
@@ -1033,6 +1268,7 @@ void setup() {
     preferences.getString(PREF_KEY_MQTT_USER, mqttUser, sizeof(mqttUser));
     preferences.getString(PREF_KEY_MQTT_PASS, mqttPassword, sizeof(mqttPassword));
     preferences.getString(PREF_KEY_MQTT_TOPIC, mqttBaseTopic, sizeof(mqttBaseTopic));
+    preferences.getString(PREF_KEY_MQTT_DISCOVERY_PREFIX, mqttDiscoveryPrefix, sizeof(mqttDiscoveryPrefix));
     preferences.end();
 
     if (strlen(mqttBroker) > 0) {
@@ -1078,6 +1314,7 @@ void setup() {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ processRootRoute(request); });
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){ processApiStatusRoute(request); });
     server.on("/api/mqtt/save", HTTP_POST, [](AsyncWebServerRequest *request){ processSaveMqttConfigRoute(request); });
+    server.on("/api/mqtt/publish_discovery", HTTP_POST, [](AsyncWebServerRequest *request){ processPublishDiscoveryRoute(request); });
     server.on("^\\/api\\/colourled\\/(state|brightness)\\/([0-9a-zA-Z]+)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processColourLEDControl(request, request->pathArg(0), request->pathArg(1)); });
     server.on("^\\/api\\/buzzer\\/(volume|test)\\/([0-9]+)?$", HTTP_POST,
@@ -1087,16 +1324,30 @@ void setup() {
     server.on("^\\/api\\/ac\\/(temp|mode|fan|power)\\/([0-9]+|dry|cool|heat|auto|quiet|low|medium|high|on|off|0|1)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processACControl(request, request->pathArg(0), request->pathArg(1)); });
     server.on("/api/pins/save", HTTP_POST,
-      [](AsyncWebServerRequest *request) { request->send(400, "application/json", "{\"success\":false,\"error\":\"No data provided\"}"); },
+      [](AsyncWebServerRequest *request) {
+        // For JSON requests, this handler should do nothing as the body handler will process the data
+      },
       NULL,
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-        processSavePinConfigRoute(request, data, len, index, total);
+        // This handler is called when there is body data
+        if (len > 0) {
+          processSavePinConfigRoute(request, data, len, index, total);
+        } else {
+          request->send(400, "application/json", "{\"success\":false,\"error\":\"No data provided\"}");
+        }
       });
     server.on("/api/zones/save", HTTP_POST,
-      [](AsyncWebServerRequest *request) { request->send(400, "application/json", "{\"success\":false,\"error\":\"No data provided\"}"); },
+      [](AsyncWebServerRequest *request) {
+        // For JSON requests, this handler should do nothing as the body handler will process the data
+      },
       NULL,
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-        processSaveZoneConfigRoute(request, data, len, index, total);
+        // This handler is called when there is body data
+        if (len > 0) {
+          processSaveZoneConfigRoute(request, data, len, index, total);
+        } else {
+          request->send(400, "application/json", "{\"success\":false,\"error\":\"No data provided\"}");
+        }
       });
     server.on("^\\/api\\/zone\\/([^/]+)\\/(toggle|on|off|0|1)$", HTTP_POST,
       [](AsyncWebServerRequest *request) { processZoneControl(request, request->pathArg(0), request->pathArg(1)); });
