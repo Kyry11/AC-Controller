@@ -44,8 +44,8 @@ const char* PREF_KEY_INPUT_PINS = "input_pins";
 const char* PREF_KEY_ZONES = "zones";
 
 // AP Mode settings for WiFi configuration
-const char* AP_CONFIG_SSID = "Baums AC Controller"; // Unique name for config AP
-const char* AP_CONFIG_PASSWORD = NULL;              // No password for config AP
+const char* AP_CONFIG_SSID = "AC Controller"; // Unique name for config AP
+const char* AP_CONFIG_PASSWORD = NULL;        // No password for config AP
 const byte DNS_PORT = 53;
 
 Preferences preferences;
@@ -646,15 +646,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 void processColourLEDControl(AsyncWebServerRequest *request, String setting, String value) {
   bool changed = false;
   if (setting == "state") {
-    bool newState = (value == "1");
+    bool newState = (value == "on" || value == "1");
     if (colourLEDState != newState) { colourLEDState = newState; changed = true; }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":" + value + "}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":" + value + "}");
   } else if (setting == "brightness") {
     uint8_t newBrightness = value.toInt();
     if (colourLEDBrightness != newBrightness) { colourLEDBrightness = newBrightness; changed = true; }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
   } else {
-    request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
+    if (request) request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
   }
   if (changed) notifyObservers();
 }
@@ -669,7 +669,7 @@ void processBuzzerControl(AsyncWebServerRequest *request, String setting, String
       player.setVolume(INITIAL_BUZZER_VOLUME);
       changed = true;
     }
-    request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"" + setting + "\",\"value\":\"" + value + "\"}");
   } else if (setting == "test") {
     // Play a test tone to demonstrate the current volume
     if (value == "" || value == NULL) {
@@ -678,9 +678,9 @@ void processBuzzerControl(AsyncWebServerRequest *request, String setting, String
     else {
       notifyAudibleTone(value.toInt());
     }
-    request->send(200, "application/json", "{\"success\":true,\"action\":\"test\"}");
+    if (request) request->send(200, "application/json", "{\"success\":true,\"action\":\"test\"}");
   } else {
-    request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
+    if (request) request->send(400, "application/json", "{\"success\":false,\"error\":\"Unknown setting\"}"); return;
   }
   if (changed) notifyObservers();
 }
@@ -755,18 +755,38 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
 
   } else if (setting == "mode") {
 
-    byte newModeByte = static_cast<byte>(ACMode::AUTO);// (ACMode::UNKNOWN);
-    if (value == "fan") newModeByte = static_cast<byte>(ACMode::FAN);
-    else if (value == "dry") newModeByte = static_cast<byte>(ACMode::DRY);
-    else if (value == "cool") newModeByte = static_cast<byte>(ACMode::COOL);
-    else if (value == "heat") newModeByte = static_cast<byte>(ACMode::HEAT);
-    else if (value == "auto") newModeByte = static_cast<byte>(ACMode::AUTO);
-    else {
-        Serial.println("Unknown mode string received: " + value + ". Using default AUTO.");
-    }
-    if (static_cast<byte>(fujitsu.getMode()) != newModeByte) {
-        fujitsu.setMode(newModeByte);
-        changed = true;
+    // Handle the combined mode/power setting
+    if (value == "off") {
+        // Turn off the AC
+        if (static_cast<bool>(fujitsu.getOnOff()) != false) {
+            fujitsu.setOnOff(false);
+            changed = true;
+        }
+    } else {
+        // Set the mode and ensure power is on
+        byte newModeByte = static_cast<byte>(ACMode::AUTO);
+        if (value == "fan_only") newModeByte = static_cast<byte>(ACMode::FAN);
+        else if (value == "dry") newModeByte = static_cast<byte>(ACMode::DRY);
+        else if (value == "cool") newModeByte = static_cast<byte>(ACMode::COOL);
+        else if (value == "heat") newModeByte = static_cast<byte>(ACMode::HEAT);
+        else if (value == "auto") newModeByte = static_cast<byte>(ACMode::AUTO);
+        // For backward compatibility
+        else if (value == "fan") newModeByte = static_cast<byte>(ACMode::FAN);
+        else {
+            Serial.println("Unknown mode string received: " + value + ". Using default AUTO.");
+        }
+
+        // Turn on the AC if it's off
+        if (static_cast<bool>(fujitsu.getOnOff()) != true) {
+            fujitsu.setOnOff(true);
+            changed = true;
+        }
+
+        // Set the mode if it's different
+        if (static_cast<byte>(fujitsu.getMode()) != newModeByte) {
+            fujitsu.setMode(newModeByte);
+            changed = true;
+        }
     }
     if (request) request->send(200, "application/json", "{\"success\":true,\"setting\":\"mode\",\"value\":\"" + value + "\"}");
 
@@ -790,6 +810,7 @@ void processACControl(AsyncWebServerRequest *request, String setting, String val
 
   } else if (setting == "power") {
 
+    // Keep the legacy power control for backward compatibility
     bool newPower = (value == "on" || value == "1");
     if (static_cast<bool>(fujitsu.getOnOff()) != newPower) {
         fujitsu.setOnOff(newPower);
@@ -920,6 +941,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String topicStr(topic);
     Serial.println("Processing event on topic '" + topicStr + "' with payload: " + payloadBuffer);
 
+    if (topicStr == String(mqttBaseTopic) + String("/status")) return; // Ignore our own updates to the world
+
     // For debug puposes share processing mqtt message with ws observers
     JsonDocument docWS;
     docWS["type"] = "mqtt_log";
@@ -928,8 +951,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     serializeJson(docWS, json);
     ws.textAll(json);
     // End debug mqtt
-
-    if (topicStr == String(mqttBaseTopic) + String("/status")) return; // Ignore our own updates to the world
 
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payloadBuffer);
@@ -942,6 +963,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (topicStr == String(mqttBaseTopic) + String("/ac/set")) {
         String setting = doc["setting"];
         String value = doc["value"];
+
+        // Handle the case where Home Assistant sends a mode command
+        // This ensures proper handling of the combined power/mode setting
         processACControl(nullptr, setting, value);
     }
 
@@ -953,8 +977,23 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     if (topicStr == String(mqttBaseTopic) + String("/zone/set")) {
         String zoneId = doc["id"];
-        String action = doc["action"];
-        processZoneControl(nullptr, zoneId, action);
+        String state = doc["state"];
+        processZoneControl(nullptr, zoneId, state);
+    }
+
+    if (topicStr == String(mqttBaseTopic) + String("/colourled/set")) {
+        if (doc["state"]) {
+            String state = doc["state"];
+            processColourLEDControl(nullptr, "state", state);
+        } else if (doc["brightness"]) {
+            String brightness = doc["brightness"];
+            processColourLEDControl(nullptr, "brightness", brightness);
+        }
+    }
+
+    if (topicStr == String(mqttBaseTopic) + String("/buzzer/set")) {
+        String volume = doc["volume"];
+        processBuzzerControl(nullptr, "volume", volume);
     }
 }
 
@@ -993,13 +1032,13 @@ void publishHomeAssistantDiscovery() {
 
     Serial.println("Publishing Home Assistant MQTT discovery information...");
 
-    // Get device information
-    uint8_t mac[6];
-    esp_wifi_get_mac(WIFI_IF_STA, mac);
-    char macStr[18];
-    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    // // Get device information
+    // uint8_t mac[6];
+    // esp_wifi_get_mac(WIFI_IF_STA, mac);
+    // char macStr[18];
+    // snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    String deviceId = "baums_ac_" + WiFi.macAddress();
+    String deviceId = "ac_controller_" + WiFi.macAddress();
     deviceId.replace(":", "");
     deviceId.toLowerCase();
 
@@ -1026,27 +1065,33 @@ void publishHomeAssistantDiscovery() {
         discoveryDoc["~"] = mqttBaseTopic;
         discoveryDoc["current_temperature_topic"] = "~/status";
         discoveryDoc["current_temperature_template"] = "{{ value_json.ac.temp }}";
+
+        // Updated mode command to handle combined power/mode control
         discoveryDoc["mode_command_topic"] = "~/ac/set";
         discoveryDoc["mode_command_template"] = "{\"setting\":\"mode\",\"value\":\"{{ value }}\"}";
         discoveryDoc["mode_state_topic"] = "~/status";
-        discoveryDoc["mode_state_template"] = "{% if value_json.ac.power == false %}off{% else %}{{ value_json.ac.mode | lower }}{% endif %}";
+        discoveryDoc["mode_state_template"] = "{% if value_json.ac.power == false %}off{% else %}{% if value_json.ac.mode == 'Fan' %}fan_only{% else %}{{ value_json.ac.mode | lower }}{% endif %}{% endif %}";
+
         discoveryDoc["temperature_command_topic"] = "~/ac/set";
         discoveryDoc["temperature_command_template"] = "{\"setting\":\"temp\",\"value\":{{ value }}}";
         discoveryDoc["temperature_state_topic"] = "~/status";
         discoveryDoc["temperature_state_template"] = "{{ value_json.ac.temp }}";
+
         discoveryDoc["fan_mode_command_topic"] = "~/ac/set";
         discoveryDoc["fan_mode_command_template"] = "{\"setting\":\"fan\",\"value\":\"{{ value }}\"}";
         discoveryDoc["fan_mode_state_topic"] = "~/status";
         discoveryDoc["fan_mode_state_template"] = "{{ value_json.ac.fanMode | lower }}";
-        discoveryDoc["power_command_topic"] = "~/ac/set";
-        discoveryDoc["power_command_template"] = "{\"setting\":\"power\",\"value\":\"{{ value }}\"}";
+
+        // Remove the separate power command topic as it's now integrated with mode
+        // discoveryDoc["power_command_topic"] = "~/ac/set";
+        // discoveryDoc["power_command_template"] = "{\"setting\":\"power\",\"value\":\"{{ value }}\"}";
 
         // Define supported modes and features
         JsonArray modes = discoveryDoc["modes"].to<JsonArray>();
         modes.add("off");
         modes.add("cool");
         modes.add("heat");
-        modes.add("fan_only");
+        modes.add("fan_only"); // Changed from "fan" to "fan_only" to match HA expectations
         modes.add("dry");
         modes.add("auto");
 
@@ -1086,11 +1131,11 @@ void publishHomeAssistantDiscovery() {
         // Define MQTT topics
         discoveryDoc["~"] = mqttBaseTopic;
         discoveryDoc["command_topic"] = "~/zone/set";
-        discoveryDoc["command_template"] = "{\"id\":\"" + zoneId + "\",\"action\":\"{{ value }}\"}";
+        discoveryDoc["command_template"] = "{\"id\":\"" + zoneId + "\",\"state\": {{ value | to_json }} }";
         discoveryDoc["state_topic"] = "~/status";
-        discoveryDoc["state_template"] = "{% for zone in value_json.zones %}{% if zone.id == '" + zoneId + "' %}{% if zone.state %}on{% else %}off{% endif %}{% endif %}{% endfor %}";
-        discoveryDoc["payload_on"] = "on";
-        discoveryDoc["payload_off"] = "off";
+        discoveryDoc["value_template"] = "{% for zone in value_json.zones %}{% if zone.id == '" + zoneId + "' %}{% if zone.state %}1{% else %}0{% endif %}{% endif %}{% endfor %}";
+        discoveryDoc["payload_on"] = "1";
+        discoveryDoc["payload_off"] = "0";
 
         String discoveryJson;
         serializeJson(discoveryDoc, discoveryJson);
@@ -1104,15 +1149,16 @@ void publishHomeAssistantDiscovery() {
     {
         JsonDocument discoveryDoc;
         discoveryDoc["name"] = "LED";
-        discoveryDoc["unique_id"] = deviceId + "_led";
+        discoveryDoc["unique_id"] = deviceId + "_colourled";
         discoveryDoc["device"] = deviceDoc;
         discoveryDoc["icon"] = "mdi:led-on";
 
         // Define MQTT topics
         discoveryDoc["~"] = mqttBaseTopic;
-        discoveryDoc["command_topic"] = "~/colourled/state";
+        discoveryDoc["command_topic"] = "~/colourled/set";
+        discoveryDoc["command_template"] = "{ \"state\": {{ value | to_json }} }";
         discoveryDoc["state_topic"] = "~/status";
-        discoveryDoc["state_template"] = "{% if value_json.colourled.state %}on{% else %}off{% endif %}";
+        discoveryDoc["value_template"] = "{% if value_json.colourled.state %}1{% else %}0{% endif %}";
         discoveryDoc["payload_on"] = "1";
         discoveryDoc["payload_off"] = "0";
 
@@ -1134,9 +1180,10 @@ void publishHomeAssistantDiscovery() {
 
         // Define MQTT topics
         discoveryDoc["~"] = mqttBaseTopic;
-        discoveryDoc["command_topic"] = "~/colourled/brightness";
+        discoveryDoc["command_topic"] = "~/colourled/set";
+        discoveryDoc["command_template"] = "{ \"brightness\": {{ value | string | to_json }} }";
         discoveryDoc["state_topic"] = "~/status";
-        discoveryDoc["state_template"] = "{{ value_json.colourled.brightness }}";
+        discoveryDoc["value_template"] = "{{ value_json.colourled.brightness }}";
         discoveryDoc["min"] = 0;
         discoveryDoc["max"] = 255;
 
@@ -1158,9 +1205,10 @@ void publishHomeAssistantDiscovery() {
 
         // Define MQTT topics
         discoveryDoc["~"] = mqttBaseTopic;
-        discoveryDoc["command_topic"] = "~/buzzer/volume";
+        discoveryDoc["command_topic"] = "~/buzzer/set";
+        discoveryDoc["command_template"] = "{ \"volume\": {{ value | string | to_json }} }";
         discoveryDoc["state_topic"] = "~/status";
-        discoveryDoc["state_template"] = "{{ value_json.buzzer.volume }}";
+        discoveryDoc["value_template"] = "{{ value_json.buzzer.volume }}";
         discoveryDoc["min"] = 0;
         discoveryDoc["max"] = 255;
 
@@ -1178,7 +1226,12 @@ void publishHomeAssistantDiscovery() {
 void setup() {
 
   Serial.begin(115200);
-  Serial.println("\n\nBooting Baum's Fujitsu AC & Zone Controller...");
+
+  String deviceId = "ac_controller_" + WiFi.macAddress();
+  deviceId.replace(":", "");
+  deviceId.toLowerCase();
+
+  Serial.println(String("\n\nBooting AC & Zone Controller... (original name \"") + deviceId + String("\")"));
 
   player.setVolume(INITIAL_BUZZER_VOLUME);
 
@@ -1270,6 +1323,12 @@ void setup() {
     preferences.getString(PREF_KEY_MQTT_TOPIC, mqttBaseTopic, sizeof(mqttBaseTopic));
     preferences.getString(PREF_KEY_MQTT_DISCOVERY_PREFIX, mqttDiscoveryPrefix, sizeof(mqttDiscoveryPrefix));
     preferences.end();
+
+    // Set base topic for mqtt to device id if it's currently not set
+    if (strlen(mqttBaseTopic) == 0) {
+      strncpy(mqttBaseTopic, deviceId.c_str(), sizeof(mqttBaseTopic) - 1);
+      mqttBaseTopic[sizeof(mqttBaseTopic) - 1] = '\0'; // Ensure null-termination
+    }
 
     if (strlen(mqttBroker) > 0) {
         mqttClient.setServer(mqttBroker, mqttPort);
@@ -1388,10 +1447,10 @@ void processFujitsuComms() {
       if (previousACState.onOff != currentState->onOff ||
           previousACState.temperature != currentState->temperature ||
           previousACState.acMode != currentState->acMode ||
-          previousACState.fanMode != currentState->fanMode ||
-          previousACState.economyMode != currentState->economyMode ||
-          previousACState.swingMode != currentState->swingMode ||
-          previousACState.swingStep != currentState->swingStep) {
+          previousACState.fanMode != currentState->fanMode) { // ||
+          // previousACState.economyMode != currentState->economyMode ||
+          // previousACState.swingMode != currentState->swingMode ||
+          // previousACState.swingStep != currentState->swingStep) {
 
         settingsChanged = true;
       }
