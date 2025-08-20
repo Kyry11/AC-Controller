@@ -13,7 +13,7 @@ const char* CONTROLLER_VERSION = "2.5";
 #include <Preferences.h>
 #include <DNSServer.h>
 #include <SPIFFS.h>
-#include <esp_wifi.h>
+// #include <esp_wifi.h>
 
 #include "melody_player/melody_player.h"
 #include "melody_player/melody_factory.h"
