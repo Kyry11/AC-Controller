@@ -1,4 +1,4 @@
-const char* CONTROLLER_VERSION = "1.3";
+const char* CONTROLLER_VERSION = "2.5";
 
 #include <Arduino.h>
 #define ARRAY_SIZE(arr)   (sizeof(arr) / sizeof((arr)[0]))
@@ -304,6 +304,7 @@ String buildCurrentStatePayload(bool includeConfigs = false, bool includeMetrics
   doc["ac"]["mode"] = ACModeToString(static_cast<ACMode>(fujitsu.getMode()));
   doc["ac"]["fanMode"] = ACFanModeToString(static_cast<ACFanMode>(fujitsu.getFanMode()));
   doc["ac"]["temp"] = fujitsu.getTemp();
+  doc["ac"]["currentTemp"] = fujitsu.getControllerTemp();
 
   JsonArray outputs = doc["outputs"].to<JsonArray>();
   for (int i = 0; i < outputPinCount; i++) {
@@ -944,12 +945,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (topicStr == String(mqttBaseTopic) + String("/status")) return; // Ignore our own updates to the world
 
     // For debug puposes share processing mqtt message with ws observers
-    JsonDocument docWS;
-    docWS["type"] = "mqtt_log";
-    docWS["message"] = String("Processing event on topic '") + String(topicStr) + String("' with payload: ") + String(payloadBuffer);
-    String json;
-    serializeJson(docWS, json);
-    ws.textAll(json);
+    // JsonDocument docWS;
+    // docWS["type"] = "mqtt_log";
+    // docWS["message"] = String("Processing event on topic '") + String(topicStr) + String("' with payload: ") + String(payloadBuffer);
+    // String json;
+    // serializeJson(docWS, json);
+    // ws.textAll(json);
     // End debug mqtt
 
     JsonDocument doc;
@@ -1032,12 +1033,6 @@ void publishHomeAssistantDiscovery() {
 
     Serial.println("Publishing Home Assistant MQTT discovery information...");
 
-    // // Get device information
-    // uint8_t mac[6];
-    // esp_wifi_get_mac(WIFI_IF_STA, mac);
-    // char macStr[18];
-    // snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
     String deviceId = "ac_controller_" + WiFi.macAddress();
     deviceId.replace(":", "");
     deviceId.toLowerCase();
@@ -1064,7 +1059,7 @@ void publishHomeAssistantDiscovery() {
         // Define MQTT topics
         discoveryDoc["~"] = mqttBaseTopic;
         discoveryDoc["current_temperature_topic"] = "~/status";
-        discoveryDoc["current_temperature_template"] = "{{ value_json.ac.temp }}";
+        discoveryDoc["current_temperature_template"] = "{{ value_json.ac.currentTemp }}";
 
         // Updated mode command to handle combined power/mode control
         discoveryDoc["mode_command_topic"] = "~/ac/set";
@@ -1220,6 +1215,30 @@ void publishHomeAssistantDiscovery() {
         Serial.println("Published buzzer volume discovery to: " + discoveryTopic);
     }
 
+    // Publish current temperature sensor
+    {
+        JsonDocument discoveryDoc;
+        discoveryDoc["name"] = "Ambient Temperature";
+        discoveryDoc["unique_id"] = deviceId + "_ambient_temp";
+        discoveryDoc["device"] = deviceDoc;
+        discoveryDoc["icon"] = "mdi:thermometer";
+
+        // Define MQTT topics
+        discoveryDoc["~"] = mqttBaseTopic;
+        discoveryDoc["state_topic"] = "~/status";
+        discoveryDoc["value_template"] = "{{ value_json.ac.currentTemp }}";
+        discoveryDoc["unit_of_measurement"] = "°C";
+        discoveryDoc["device_class"] = "temperature";
+        discoveryDoc["state_class"] = "measurement";
+
+        String discoveryJson;
+        serializeJson(discoveryDoc, discoveryJson);
+
+        String discoveryTopic = String(mqttDiscoveryPrefix) + "/sensor/" + deviceId + "_ambient_temp/config";
+        mqttClient.publish(discoveryTopic.c_str(), discoveryJson.c_str(), true);
+        Serial.println("Published ambient temperature sensor discovery to: " + discoveryTopic);
+    }
+
     Serial.println("Home Assistant MQTT discovery information published successfully");
 }
 
@@ -1315,12 +1334,17 @@ void setup() {
 
     fujitsu.connect(&Serial2, true, acRxPin, acTxPin);
 
+    // Load MQTT configuration
     preferences.begin("mqtt-config", true);
     preferences.getString(PREF_KEY_MQTT_BROKER, mqttBroker, sizeof(mqttBroker));
     mqttPort = preferences.getInt(PREF_KEY_MQTT_PORT, 1883);
     preferences.getString(PREF_KEY_MQTT_USER, mqttUser, sizeof(mqttUser));
     preferences.getString(PREF_KEY_MQTT_PASS, mqttPassword, sizeof(mqttPassword));
-    preferences.getString(PREF_KEY_MQTT_TOPIC, mqttBaseTopic, sizeof(mqttBaseTopic));
+
+    // Get the MQTT base topic
+    String storedTopic = preferences.getString(PREF_KEY_MQTT_TOPIC, "");
+
+    // Get the MQTT discovery prefix
     preferences.getString(PREF_KEY_MQTT_DISCOVERY_PREFIX, mqttDiscoveryPrefix, sizeof(mqttDiscoveryPrefix));
     preferences.end();
 
@@ -1537,7 +1561,7 @@ void loop() {
     processFujitsuComms();
     processLEDColourCycle();
     processPinStateChanges();
-    ws.cleanupClients();
+    ws.cleanupClients(2); // See how this affects performance
   }
   processResetButtonPress(); // Reset button should always be active
 

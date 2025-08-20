@@ -4,11 +4,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
   <style>
-    html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center; }
-    .button { background-color: yellow; border: none; color: grey; padding: 8px 8px;
-    text-decoration: none; font-size: 11px; margin: 2px; cursor: pointer; }
-    .button-off { background-color: #efefef; }
-    .button-container { display: inline-grid; grid-template-columns: auto auto auto; }
+    html {
+      font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;
+    }
+    .button {
+      background-color: yellow; border: none; color: grey; padding: 8px 8px;
+      text-decoration: none; font-size: 11px; margin: 2px; cursor: pointer;
+    }
+    .button-off {
+      background-color: #efefef;
+    }
+    .button-container {
+      display: inline-grid; grid-template-columns: auto auto auto;
+    }
+    .narrow-input {
+      width: 25px;
+    }
   </style>
   <script src="test.js"></script>
   <script>
@@ -42,8 +53,8 @@
       }
     }
 
-    async function reloadCurrentStateAsync() {
-      const state = await getCurrentState(true);
+    async function reloadCurrentStateAsync(includeConfig = false) {
+      const state = await getCurrentState(includeConfig);
       if (state) {
         deviceState = state;
         updateUIFromState(state);
@@ -112,8 +123,9 @@
         document.getElementById('acstatelabel').innerHTML = 'Power: ' + (state.ac.power ? 'On' : 'Off');
         document.getElementById('acmodeselect').value = state.ac.mode;
         document.getElementById('acfanmodeselect').value = state.ac.fanMode;
-        document.getElementById('actempinput').value = state.ac.temp;
-        document.querySelector('label[for="actempinput"]').innerHTML = 'Temperature: ' + state.ac.temp;
+        document.getElementById('actargettempinput').value = state.ac.temp;
+        document.querySelector('label[for="actargettempinput"] span').innerHTML = state.ac.temp;
+        document.querySelector('label[for="accurrenttempinput"] span').innerHTML = state.ac.currentTemp;
       }
 
       if (state.colourled) {
@@ -355,14 +367,14 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-      reloadCurrentStateAsync()
+      reloadCurrentStateAsync(true)
         .then(() => connectWebSocket());
     });
   </script>
 </head>
 <body>
   <h1>AC & Zone Controller</h1>
-  <small id="controller-version">UI: V2.2 API: V<span id="api_version"></span></small>
+  <small id="controller-version">UI: V2.5 API: V<span id="api_version"></span></small>
 
   <h3>Update Current State</h3>
   <div class="button-container">
@@ -392,9 +404,11 @@
       <option value="Auto">Auto</option>
     </select>
     <br/>&nbsp;<br/>
-    <label for="actempinput">Temperature: 22</label>&nbsp;
-    <input type="text" id="actempinput" value="22" />
-    <input type="button" value="Set" onclick="submitApiRequest('/api/ac/temp/' + document.getElementById('actempinput').value); return false;">
+    <label for="accurrenttempinput">Ambient Temperature: <span>0</span></label>&nbsp;
+    <br/>&nbsp;<br/>
+    <label for="actargettempinput">Target Temperature: <span>0</span></label>&nbsp;
+    <input type="text" id="actargettempinput" value="0" class="narrow-input"/>
+    <input type="button" value="Set" onclick="submitApiRequest('/api/ac/temp/' + document.getElementById('actargettempinput').value); return false;">
   </div>
 
   <h3>MQTT Configuration</h3>
