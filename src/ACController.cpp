@@ -128,7 +128,7 @@ unsigned long fujitsuLastConnected = millis();
 
 String htmlWiFiConfigCaptivePortal = R"rawliteral(
 <!DOCTYPE HTML><html><head>
-<title>Baum's AC Module Config</title>
+<title>Kyry11's AC Module Config</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f4; }
@@ -1043,7 +1043,7 @@ void publishHomeAssistantDiscovery() {
     deviceDoc["name"] = "AC And Zone Controller";
     deviceDoc["sw_version"] = CONTROLLER_VERSION;
     deviceDoc["model"] = "AC And Zone Controller";
-    deviceDoc["manufacturer"] = "Kyryll";
+    deviceDoc["manufacturer"] = "Kyry11";
 
     String deviceJson;
     serializeJson(deviceDoc, deviceJson);
